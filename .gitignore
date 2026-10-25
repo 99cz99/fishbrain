@@ -1,0 +1,37 @@
+# 凭据 / 运行时数据（不入库）
+fish/config.toml
+fish/*.db
+*.db
+__pycache__/
+*.pyc
+
+# 构建产物 / 下载的二进制
+*.apk
+*.deb
+lagrange/
+napcat/
+
+# 调试残留（含聊天内容，绝不入库）
+/dis19.txt
+/err_types.txt
+/fd_log.txt
+/fd_log2.txt
+/pub_log.txt
+/qq_log2.txt
+/ws_err.txt
+/qr_fresh.png
+/appsettings.json
+/onebot11.json
+
+# 一次性部署脚本（不是源码，见 CLAUDE.md）
+/fix-deps.sh
+/inject-napcat.sh
+/kill-qq.sh
+/run-lagrange.sh
+/run-qq.sh
+/setup-napcat.sh
+/start-napcat.sh
+/test-debian.sh
+/migrate_llm.py
+/write_fish_config.py
+/open_claude.bat

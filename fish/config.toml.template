@@ -1,0 +1,22 @@
+# Fishbrain · 凭据配置
+# 用法：复制为 config.toml 并填值（config.toml 不入库）
+# 注意：名字/性格/冒泡频率等「软设定」不在这里，在监管 app 里改（存 SQLite）
+
+[server]
+host = "127.0.0.1"
+port = 8765
+db_path = "fish.db"          # SQLite：记忆 + 设定 + 日志
+
+[qq]
+# OneBot v11 正向 WebSocket 地址（NapCat 监听此端口，鱼脑连上去）
+ws_url = "ws://127.0.0.1:8081"
+backend = "napcat"                      # napcat
+# NapCat 登录二维码文件路径（proot-Debian 容器内，映射到 Termux 文件系统）
+qrcode_path = "/data/data/com.termux/files/usr/var/lib/proot-distro/containers/debian/rootfs/opt/QQ/resources/app/app_launcher/napcat/cache/qrcode.png"
+
+[heybox]
+token = ""                              # 小黑盒 token
+
+[bilibili]
+sessdata = ""                           # B站 cookie: SESSDATA
+csrf = ""                               # B站 cookie: bili_jct
