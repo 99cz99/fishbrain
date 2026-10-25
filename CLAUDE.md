@@ -98,7 +98,7 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux sh -c 'cd /data/data/com.termux/
 - **`Store.get_logs(category, level, limit)` 第二参是 `level` 不是 `limit`**：按位置传会把 limit 当 level 过滤（`WHERE level=40` 永远空）。所以 `get_logs("deploy", 40)` 是错的，要 `get_logs("deploy", limit=40)`。踩过：server.py 的 Deployer 状态、`/chat`、life.py 的「最近发生的事」都曾因此返回空。改 `get_logs` 一律用 `limit=` 关键字。
 - **`app/assets/fish/*.py` 要跟 `fish/` 同步**：那是「部署向导」写进 Termux 的嵌入副本（含 life.py/autonomy.py）。改完 `cp fish/*.py app/assets/fish/`；`app/assets/deploy/` 同理同步 `setup-qq.sh`/`setup-fish.sh`/`onebot11.json`（`setup-fish.sh` 是装 Python 环境的分步脚本，`deploy/` 根目录也要留一份）。
 - **版本号**：改 `app/` 代码 bump `app/pubspec.yaml` 的 `version`（x.y.z+n）。
-- **不入库**：`fish/config.toml`、`fish/fish.db`、`__pycache__/`。
+- **不入库**：`fish/config.toml`、`fish/fish.db`、`__pycache__/`（完整清单见 `.gitignore`）。
 
 ## 待做（详见计划文件）
 
@@ -111,3 +111,4 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux sh -c 'cd /data/data/com.termux/
 
 - `fish/config.toml` 是本机测试副本（空 key），真凭据在手机 Termux 的 `~/dfy/`。
 - dfy 根目录一堆 `*.sh`/`*.py`（setup-napcat.sh、run-qq.sh、migrate_llm.py 等）是**一次性部署脚本**，不是源码；`lagrange/`、`napcat/` 是下载的二进制/安装包。
+- 项目已公开在 github.com/99cz99/fishbrain（public）。CLAUDE.md 与所有提交文件都在这个公开仓库里，**以后编辑/提交别再写个人信息**（Windows 用户名、QQ 号、邮箱、`C:\Users\...` 绝对路径）。本仓库提交身份是 repo 级的 `99cz99` + GitHub noreply 邮箱（覆盖全局的 QQ 号邮箱）。
