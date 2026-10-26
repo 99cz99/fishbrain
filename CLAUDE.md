@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
        │     qq_bot.py   OneBot v11 WS 客户端 + 工具注册表(get_tools/handle_tool，约 92 个 NapCat 工具)
        │     heybox.py   小黑盒 HTTP API：签到/抽奖/领券/发帖/评论/浏览（契约同 qq_bot）
        │
-       ├── 监管 app (Flutter · 零第三方依赖)    6 tab：状态/聊天/审批/记忆/设定/部署
+       ├── 监管 app (Flutter · 仅一个插件 image_picker)    6 tab：状态/聊天/审批/记忆/设定/部署
        │     连 http://127.0.0.1:8765
        │
        └── QQ = NapCat（proot-Debian 里的 linuxqq + NapCat 注入）
@@ -44,7 +44,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **QQ 数据流**：QQ 消息 → NapCat → OneBot WS(8081) → `qq_bot.py` → `brain.chat`/`chat_with_tools`（只带 `publish` 工具）→ 回复 → NapCat → QQ。
 
-**HTTP 端点**（server.py）：`/status /logs /chat /memories /settings /llm /usage /approval/pending /command /qrcode /life/state /life/wake /qq/start /qq/stop /qq/status /qq/api /qq/refresh_qr /qq/apply_onebot /deploy/qq /deploy/status /heybox /heybox/status /heybox/sign /growth/evolve /persona/reset`。
+**HTTP 端点**（server.py）：`/status /logs /chat /memories /settings /llm /usage /approval/pending /command /qrcode /life/state /life/wake /qq/start /qq/stop /qq/status /qq/api /qq/refresh_qr /qq/apply_onebot /deploy/qq /deploy/status /heybox /heybox/status /heybox/sign /growth/evolve /persona/reset /stickers /stickers/<id>/image`。
 
 ## 常用命令
 
@@ -52,11 +52,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cd fish
 python server.py                                    # 起本地 API
-python -m py_compile server.py brain.py memory.py life.py autonomy.py qq_bot.py heybox.py   # 语法检查
+python -m py_compile server.py brain.py memory.py life.py autonomy.py qq_bot.py heybox.py weather.py   # 语法检查
 curl 127.0.0.1:8765/status                          # 探活
 ```
 
-**监管 app（Flutter，零第三方依赖）**
+**监管 app（Flutter，仅一个插件 image_picker）**
 ```bash
 cd app
 flutter analyze
