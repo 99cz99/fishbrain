@@ -10,7 +10,6 @@ import 'login.dart';
 
 const String _home = '/data/data/com.termux/files/home';
 const String _dfyDir = '$_home/dfy';
-const String _python = '/data/data/com.termux/files/usr/bin/python';
 
 class WizardPage extends StatefulWidget {
   final ApiClient api;
@@ -201,6 +200,11 @@ class _WizardPageState extends State<WizardPage> {
       failed++;
       _logLn('写入 setup-fish.sh 失败');
     }
+    final rf = await rootBundle.loadString('assets/deploy/run-fish.sh');
+    if (!await _termux.writeFile('$_dfyDir/run-fish.sh', rf)) {
+      failed++;
+      _logLn('写入 run-fish.sh 失败');
+    }
     if (failed > 0) {
       _logLn('有文件写入失败：Termux 没装或权限没授（回上一步看「环境检查」）');
       if (mounted) setState(() => _busy = false);
@@ -225,7 +229,7 @@ class _WizardPageState extends State<WizardPage> {
 
     _logLn('环境就绪，起鱼脑…');
     await _termux.run(
-      'cd $_dfyDir && $_python -u server.py > server.log 2>&1 < /dev/null',
+      'cd $_dfyDir && sh run-fish.sh',
       workdir: _dfyDir,
     );
     await _waitForFish();

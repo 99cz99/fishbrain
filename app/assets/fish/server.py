@@ -3,7 +3,6 @@
 import json
 import os
 import re
-import socket
 import subprocess
 import sys
 import threading
@@ -45,7 +44,8 @@ QQ_LOG_PATH = ("/data/data/com.termux/files/usr/var/lib/proot-distro/containers/
                "rootfs/root/napcat/qq.log")
 # 「进程活着但已掉线」的宽限期（秒）：避开 linuxqq 正常启动/扫码/NapCat 自愈窗口，别抢重启
 QQ_STALE_GRACE_SECONDS = 300
-# 因「掉线但进程残留」自动重启的最小间隔（秒）：防风控
+# 「掉线但进程残留」时记日志的节流间隔（秒）。
+# 原为自动重启冷却；因 proot 下 keystore 落不了盘、重启 linuxqq 必丢登录，已改为只记日志不重启。
 QQ_STALE_RESTART_COOLDOWN = 900
 # 连续自动拉起 N 次仍无法稳定在线 → 熔断（区别 cooldown：cooldown 是单次间隔，熔断是连续失败后的长暂停）
 QQ_AUTO_MAX_FAIL = 5
@@ -62,16 +62,6 @@ def _qq_env():
     env["PATH"] = TERMUX_BIN + ":" + TERMUX_BIN + "/applets:" + env.get("PATH", "")
     env["PROOT_NO_SECCOMP"] = "1"  # workaround proot 5.1.107.99 的 seccomp 回归导致段错误
     return env
-
-
-def _qq_running():
-    """NapCat OneBot WS(8081) 是否在监听（= QQ 已登录、可聊天）。"""
-    try:
-        s = socket.create_connection(("127.0.0.1", QQ_WS_PORT), timeout=1)
-        s.close()
-        return True
-    except Exception:
-        return False
 
 
 def _qq_process_alive():
@@ -100,11 +90,6 @@ def _qq_qr_fresh(path):
         return False
 
 
-def _qq_stale(qr_path):
-    """进程活着 + WS 不通 + 无新鲜二维码 = 掉线但进程残留（NapCat 自愈失败/卡死态）。"""
-    return _qq_process_alive() and not _qq_running() and not _qq_qr_fresh(qr_path)
-
-
 def _parse_qq_log_state():
     """解析 qq.log 尾部（约 64KB），归类 QQ 掉线根因（固定优先级，非「最近事件」）。
     优先级：NT 内核超时 > 账号离线 > 等扫码 > 风控 > 登录报错码。
@@ -124,6 +109,9 @@ def _parse_qq_log_state():
     # 掉线事件：NapCat 检测到账号离线
     if "账号已离线" in tail or "账号状态变更为离线" in tail:
         return "offline"
+    # 登录服务断连（扫码后还没确认就掉线，登录失败死循环）
+    if "登录服务已断开" in tail:
+        return "login_service_dropped"
     # 等待扫码
     if "请扫描下面的二维码" in tail:
         return "waiting_scan"
@@ -306,6 +294,16 @@ class Fish:
             self.log("error", "error", f"QQ 停止失败: {e}")
             return {"ok": False, "error": str(e)}
 
+    def _qq_really_online(self):
+        """QQ 是否真实在线：账号已登录（self_id 存在）且 OneBot WS 建立。
+        不用 TCP 探活（8081 端口）——账号掉线/NapCat 卡死时端口仍能连上。"""
+        bot = getattr(self, "qq_bot", None)
+        return bool(bot and bot.connected and bot.self_id)
+
+    def _qq_stale(self, qr_path):
+        """进程活着 + 账号/WS 已掉线 + 无新鲜二维码 = 掉线但进程残留（NapCat 卡死态）。"""
+        return _qq_process_alive() and not self._qq_really_online() and not _qq_qr_fresh(qr_path)
+
     def qq_status(self):
         qr_path = self.qq_cfg.get("qrcode_path", DEFAULT_QRCODE_PATH)
         self_id = None
@@ -318,13 +316,13 @@ class Fish:
         except Exception:
             qr_age = -1
         process_alive = _qq_process_alive()
-        online = _qq_running()
+        online = self._qq_really_online()
         qr_fresh = _qq_qr_fresh(qr_path)
         return {
             "running": process_alive,      # 进程活着（含扫码阶段）
             "qr": qr_fresh,                # 有新鲜二维码 = 待扫码
             "qr_age": qr_age,              # 二维码生成至今秒数（-1=还没有码）
-            "online": online,              # OneBot WS(8081) 通 = 已登录可聊天
+            "online": online,              # 账号已登录且 WS 真实存活（非 TCP 探活）
             "stale": process_alive and not online and not qr_fresh,  # 掉线残留
             "login_reason": _parse_qq_log_state(),  # qq.log 最近一次登录事件归类
             "self_id": self_id,            # 登录后的 QQ 号
@@ -353,13 +351,13 @@ class Fish:
 
     def qq_keep_alive(self):
         """自保本能：QQ 进程掉了就自动拉起（带风控护栏 + 扫码停手）。
-        进程活着但已掉线（WS 不通、无新鲜码）时，宽限期后也自动重启救回。
+        进程活着但已掉线（账号/WS 掉线、无新鲜码）时只记日志不重启（proot 下重启必丢登录）。
         由 autonomy 周期性调用；用户显式停 QQ 后不再自动拉起。"""
         if not self._qq_auto:
             return
         now = time.time()
-        # 记录 WS 上次在线时刻（掉线宽限期的基准）；持续稳定在线才清零熔断计数
-        if _qq_running():
+        # 记录上次真实在线时刻（掉线宽限期的基准）；持续稳定在线才清零熔断计数
+        if self._qq_really_online():
             self._last_qq_online_ts = now
             if self._qq_online_since == 0.0:
                 self._qq_online_since = now
@@ -396,16 +394,17 @@ class Fish:
                 return
             self.log("info", "qq", "检测到 QQ 离线，自动拉起…")
             return self.qq_start()
-        # 分支 2：进程活着但掉线（WS 不通 + 无新鲜码）→ 宽限期后重启救回
-        if not _qq_stale(qr_path):
+        # 分支 2：进程活着但掉线（WS 不通 + 无新鲜码）。
+        # proot 下 keystore 落不了盘、重启 linuxqq 必丢登录，自动重启 = 自动掉登录。
+        # 所以这里不重启，只按节流记日志，交回 qq_bot 的 5s 重连去恢复 WS。
+        if not self._qq_stale(qr_path):
             return
         if now - self._last_qq_online_ts < QQ_STALE_GRACE_SECONDS:
-            return  # 可能还在正常启动/扫码/NapCat 自愈窗口，别抢重启
+            return  # 可能还在正常启动/扫码/NapCat 自愈窗口，先别动作
         if now - self._last_qq_stale_restart_ts < QQ_STALE_RESTART_COOLDOWN:
-            return  # 冷却，防风控
+            return  # 日志节流，避免刷屏
         self._last_qq_stale_restart_ts = now
-        self.log("warn", "qq", "检测到 QQ 进程残留但已掉线，自动重启…")
-        threading.Thread(target=self._restart_qq, daemon=True).start()
+        self.log("warn", "qq", "QQ 进程活着但 WS 掉线（NapCat 疑似卡住），不重启以保留登录态，等待自动重连")
 
     def _find_login_uin(self):
         """扫码登录后 NapCat 会生成 onebot11_<uin>.json（首次为空 WS），从文件名拿 QQ 号。
@@ -488,10 +487,12 @@ class Fish:
         st = self.autonomy.life.state()
         return {
             "mood": st["mood"],
+            "valence": st.get("valence", 0.0),
+            "arousal": st.get("arousal", 0.0),
             "next_wake_at": st["next_wake_at"],
             "last_wake_at": st["last_wake_at"],
             "paused": self.autonomy.is_paused(),
-            "platforms_online": ["qq"] if _qq_running() else [],
+            "platforms_online": ["qq"] if self._qq_really_online() else [],
         }
 
     def life_wake(self):

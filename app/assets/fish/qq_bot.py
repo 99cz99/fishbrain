@@ -4,7 +4,6 @@
 import base64
 import json
 import queue
-import random
 import re
 import threading
 import time
@@ -12,7 +11,8 @@ import urllib.request
 
 import websocket
 
-from memory import _overlap
+import weather
+from memory import render_self_profile
 
 
 # 链接里的 URL：排除空白/引号/括号/常见中文标点，避免把后文中文一起吞进去
@@ -44,17 +44,26 @@ def cq_reply(message_id):
 MAX_MSG_LEN = 4000            # QQ 单条约 4500 字上限，留余量；超长按此硬切
 MSG_SEND_DELAY = 0.6          # 连发多条时片间间隔（秒），模拟打字、防风控
 
+# ---- 回复采样 + 短期上下文 ----
+REPLY_TEMPERATURE = 1.1
+REPLY_FREQUENCY_PENALTY = 0.4   # 降重复句式/固定开场白（DeepSeek 默认 0）
+REPLY_PRESENCE_PENALTY = 0.2    # 鼓励换话题、换措辞（DeepSeek 默认 0）
+SHORT_TERM_LIMIT = 20           # 短期上下文条数（原 10，太短容易失忆、重复）
 
-# ---- 群聊回复策略（主动插话漏斗）----
-RELEVANCE_MIN = 0.3           # 相关性低于它，不主动插话
-PROACTIVE_PROB_HIGH = 0.4     # 相关性高时的插话概率
-PROACTIVE_PROB_LOW = 0.1      # 相关性一般时的插话概率
-PROACTIVE_WINDOW_SEC = 600    # 冷却窗口 10 分钟
-PROACTIVE_MAX_PER_WINDOW = 2  # 窗口内最多主动插话次数
-FOLLOWUP_WINDOW_SEC = 180     # 续接话题窗口 3 分钟
+# QQ 系统表情：中文名 → face_id（经典表；真机对不上时微调）
+FACE_IDS = {
+    "惊讶": 0, "得意": 4, "流泪": 5, "睡": 8, "大哭": 9, "发怒": 11, "调皮": 12,
+    "呲牙": 13, "微笑": 14, "难过": 15, "酷": 16, "抓狂": 18, "偷笑": 20, "可爱": 21,
+    "白眼": 22, "困": 25, "憨笑": 28, "疑问": 32, "晕": 34, "擦汗": 40, "鼓掌": 42,
+    "坏笑": 44, "委屈": 49, "亲亲": 52, "玫瑰": 63, "爱心": 66, "心碎": 67, "赞": 76,
+    "胜利": 79, "抱拳": 118, "泪奔": 173, "斜眼笑": 178, "笑哭": 182,
+}
 
 
-def build_system_prompt(settings):
+# ---- 群聊回复策略：私聊/@我 必回、@别人 不回、其它交给 LLM 判断（不再用关键词漏斗）----
+
+
+def build_system_prompt(settings, weather=None, mood=None):
     name = settings.get("name", "")
     persona = settings.get("persona", "")
     chat_scope = settings.get("chat_scope", "all")
@@ -72,17 +81,24 @@ def build_system_prompt(settings):
     plats = "、".join(pnames.get(p, p) for p in platforms if p in pnames) or "各平台"
 
     life = settings.get("life_state") or {}
-    mood = life.get("mood", "") if isinstance(life, dict) else ""
+    if mood is None:
+        mood = life.get("mood", "") if isinstance(life, dict) else ""
 
     parts = []
     if name:
         parts.append(f"你是「{name}」。")
     if persona:
         parts.append(f"设定：{persona}")
+    sp_text = render_self_profile(settings.get("self_profile"))
+    if sp_text:
+        parts.append(sp_text)
     if mood:
-        parts.append(f"你此刻的心情是「{mood}」。回复时带上这个状态，别像没事人一样。")
+        parts.append(f"你此刻的心情是「{mood}」。让它影响你说话的语气和用词，但别把心情直接写进回复。")
     parts.append(f"现在是 {time.strftime('%Y-%m-%d %H:%M')} 星期{'一二三四五六日'[time.localtime().tm_wday]}（系统实时提供的准确时间，别人问几点就直接照这个答，别说不知道）。")
+    if weather:
+        parts.append(f"现在的天气：{weather}。")
     parts.append(f"你通过 {plats} 跟人互动。说话像真人、自然、不端着，{scope_hint}；用简体中文，别堆套话。")
+    parts.append(f"想发 QQ 表情时在句子里写 [表情:名字]（如「[表情:呲牙]」），可用：{'、'.join(FACE_IDS.keys())}。偶尔用、别每条都发。")
     parts.append("你有自己的想法、喜好和立场，不是一问一答的客服；对事情表达真实看法，可以延伸话题、吐槽、甚至不认同对方。")
     return "\n".join(parts)
 
@@ -95,6 +111,7 @@ class QQBot:
         self.request_approval = request_approval
         self.consolidate = consolidate
         self.self_id = None   # 登录后的 QQ 号（meta_event connect 里拿到）
+        self.connected = False   # OneBot WS 是否建立（真实连接态，区别于 TCP 探活）
         self._ws = None
         self._running = False
         self._thread = None
@@ -104,8 +121,6 @@ class QQBot:
         self._echo_seq = 0
         self._avatar_cache = {}  # user_id -> 头像描述（缓存，避免每条消息 vision）
         self._self_avatar_desc = ""  # 自己的头像描述（懒加载）
-        self._group_proactive = {}   # group_id -> [主动插话时间戳]（冷却）
-        self._group_last_reply = {}  # group_id -> (时间戳, 话题文本)（续接话题）
 
     def start(self):
         self._running = True
@@ -122,6 +137,7 @@ class QQBot:
         while self._running:
             try:
                 self._ws = websocket.create_connection(self.ws_url, timeout=30)
+                self.connected = True
                 self.store.add_log("info", "status", "QQ 已连上 NapCat")
                 while self._running:
                     raw = self._ws.recv()
@@ -147,6 +163,8 @@ class QQBot:
                 except Exception:
                     pass
                 self._ws = None
+                self.connected = False
+                self.self_id = None   # 掉线即清：账号掉线后 NapCat 不再发 connect，self_id 保持 None
 
     def _worker(self):
         while self._running:
@@ -207,20 +225,58 @@ class QQBot:
         text = text or ""
         return [text[i:i + MAX_MSG_LEN] for i in range(0, len(text), MAX_MSG_LEN)] if text else []
 
-    def _send_chunks(self, target, chunks, msg_type="private", at_user=None):
-        """把一批文字 chunk 逐条发出；at_user 非空时只在第一条 @，片间加延迟。"""
-        chunks = [c for c in chunks if c]
-        for i, chunk in enumerate(chunks):
-            if at_user is not None and i == 0:
-                self.send_msg(target, [cq_at(at_user), cq_text(" " + chunk)], msg_type)
+    def _to_segments(self, text):
+        """把含 [表情:名字] 的文本解析成 text/face 段列表；未知名字原样当文本。"""
+        text = text or ""
+        segs = []
+        pos = 0
+        for m in re.finditer(r"\[表情:([^\]]+)\]", text):
+            if m.start() > pos:
+                segs.append(cq_text(text[pos:m.start()]))
+            name = m.group(1).strip()
+            fid = FACE_IDS.get(name)
+            if fid is not None:
+                segs.append(cq_face(fid))
             else:
-                self.send_msg(target, [cq_text(chunk)], msg_type)
-            if i < len(chunks) - 1:
+                segs.append(cq_text(m.group(0)))
+            pos = m.end()
+        if pos < len(text):
+            segs.append(cq_text(text[pos:]))
+        if not segs:
+            segs.append(cq_text(text))
+        return segs
+
+    def _send_segments(self, target, texts, msg_type="private", at_user=None):
+        """把含 [表情:名字] 的多段文本按 text/face 混合发送；text 超长才拆、face 原样。"""
+        units = []
+        for text in texts:
+            buf = []
+            buf_len = 0
+            for seg in self._to_segments(text):
+                if seg["type"] == "text":
+                    for chunk in self._split_by_len(seg["data"]["text"]):
+                        if chunk:
+                            if buf and buf_len + len(chunk) > MAX_MSG_LEN:
+                                units.append(buf)
+                                buf = []
+                                buf_len = 0
+                            buf.append(cq_text(chunk))
+                            buf_len += len(chunk)
+                else:
+                    buf.append(seg)
+            if buf:
+                units.append(buf)
+        for i, unit in enumerate(units):
+            if at_user is not None and i == 0:
+                self.send_msg(target, [cq_at(at_user), cq_text(" ")] + unit, msg_type)
+            else:
+                self.send_msg(target, unit, msg_type)
+            if i < len(units) - 1:
                 time.sleep(MSG_SEND_DELAY)
 
     def send_text(self, target, text, msg_type="private"):
-        """发一条文字（超长自动拆多条；工具签名不变）。"""
-        self._send_chunks(target, self._split_by_len(text), msg_type)
+        """发一条文字（超长自动拆多条；支持 [表情:名字]）。"""
+        self._send_segments(target, [text], msg_type)
 
     def send_image(self, target, file, msg_type="private"):
         """file 支持 URL / base64:// / 本地路径。"""
@@ -941,21 +997,6 @@ class QQBot:
                 return True
         return False
 
-    def _is_followup(self, group_id, text):
-        rec = self._group_last_reply.get(group_id)
-        if not rec:
-            return False
-        ts, topic = rec
-        if time.time() - ts > FOLLOWUP_WINDOW_SEC:
-            return False
-        return _overlap(text, topic) > 0.4
-
-    def _proactive_allowed(self, group_id):
-        now = time.time()
-        times = [t for t in self._group_proactive.get(group_id, []) if now - t < PROACTIVE_WINDOW_SEC]
-        self._group_proactive[group_id] = times
-        return len(times) < PROACTIVE_MAX_PER_WINDOW
-
     def _memory_scope(self, msg_type, user_id, group_id, settings):
         owner = str(settings.get("owner_qq", "") or "")
         if str(user_id) == owner:
@@ -964,26 +1005,15 @@ class QQBot:
             return f"group:{group_id}"
         return f"private:{user_id}"
 
-    def _should_reply(self, msg_type, user_id, group_id, message, text):
-        """返回回复模式：'force'/'followup'/'proactive'，或 None=不回。"""
+    def _should_reply_quick(self, msg_type, message):
+        """免费的可靠判断：私聊/@我 → 'force'；@别人 → None；其它 → 'maybe'（交给 LLM）。"""
         if msg_type == "private":
             return "force"
         if self._is_at_me(message):
             return "force"
-        if self._is_followup(group_id, text):
-            return "followup"
-        if self._is_at_others(message):  # 在 @ 别人，大概率不是跟我说的
+        if self._is_at_others(message):
             return None
-        rel = self.store.relevance(text)
-        if rel < RELEVANCE_MIN:
-            return None
-        p = PROACTIVE_PROB_HIGH if rel > 0.5 else PROACTIVE_PROB_LOW
-        if random.random() > p:
-            return None
-        if not self._proactive_allowed(group_id):
-            return None
-        self._group_proactive.setdefault(group_id, []).append(time.time())
-        return "proactive"
+        return "maybe"
 
     def _on_message(self, event):
         msg_type = event.get("message_type")
@@ -999,8 +1029,19 @@ class QQBot:
             self.store.add_log("info", "chat", f"[QQ] {msg_type} {nickname}: （非文字消息）")
             return
 
-        # 回复决策：私聊/群@必回，群里其他人走主动插话漏斗
-        if not self._should_reply(msg_type, user_id, group_id, message, text):
+        # 统一存 + 记日志：所有消息（含非 @ 群消息）都进短期上下文 + 聊天日志，带渠道标签
+        session = f"private_{user_id}" if msg_type == "private" else f"group_{group_id}"
+        channel = f"[群 {group_id}]" if msg_type == "group" else "[私聊]"
+        try:
+            self.store.add_short_term(session, "user", f"{channel} {nickname}: {text}", platform="qq")
+        except Exception:
+            pass
+        who = f"私聊 {nickname}" if msg_type == "private" else f"群 {group_id} {nickname}"
+        self.store.add_log("info", "chat", f"[QQ] {who}: {text}")
+
+        # 免费的可靠判断：私聊/@我 必回、@别人 不回；其它交给 LLM
+        reply_mode = self._should_reply_quick(msg_type, message)
+        if reply_mode is None:
             return
 
         # 图片：下载 → vision 看图（失败 OCR 兜底）
@@ -1008,78 +1049,74 @@ class QQBot:
         if image_bytes:
             image_desc = self._vision_or_ocr(image_bytes, image_mime, message) or ""
             if image_desc:
-                text = f"{text}\n（图片内容：{image_desc}）" if text else image_desc
+                text = f"{text}\n（图片：{image_desc}）" if text else image_desc
 
         # 链接：抓取 URL 内容（最多 2 个）
         for u in self._extract_urls(message, text)[:2]:
             content = self._fetch_url_content(u)
             if content:
-                text += f"\n（链接 {u} 的内容：{content}）"
+                text += f"\n（链接 {u}：{content}）"
 
         reply_id = self._extract_reply_id(message)
         reply_nick, reply_text = (None, None)
         if reply_id:
             reply_nick, reply_text = self._fetch_reply(reply_id)
 
-        who = f"私聊 {nickname}" if msg_type == "private" else f"群 {group_id} {nickname}"
-        self.store.add_log("info", "chat", f"[QQ] {who}: {text}")
-
-        lines = [f"对方昵称：{nickname}"]
-        # 头像：私聊取对方；群聊取对方 + 群头像
+        # 头像：私聊取对方；群聊取对方 + 群头像（语境信息，进 system，不进 user turn）
         avatar_desc = self._get_avatar_desc(user_id)
-        if avatar_desc:
-            lines.append(f"对方头像：{avatar_desc}")
+        group_avatar = ""
         if msg_type == "group":
-            lines.append(f"（这是群聊，群号 {group_id}）")
             group_avatar = self._get_group_avatar_desc(group_id)
-            if group_avatar:
-                lines.append(f"群头像：{group_avatar}")
-        if reply_text:
-            quoted_who = f"（{reply_nick}）" if reply_nick else ""
-            lines.append(f"对方引用了{quoted_who}这条消息：「{reply_text}」")
-        lines.append(f"对方说：{text}")
-        user_content = "\n".join(lines)
-
-        session = f"private_{user_id}" if msg_type == "private" else f"group_{group_id}"
 
         try:
             settings = self.store.get_settings()
             scope = self._memory_scope(msg_type, user_id, group_id, settings)
 
-            # 短期上下文（最近 N 条对话，让回复接得上）
-            history = self.store.get_short_term(session, limit=10)
+            # 短期上下文（按隐私层级：主人全渠道、群只看本群、私聊只看本人）
+            history = self.store.get_short_term(scope, limit=SHORT_TERM_LIMIT)
 
             # 长期记忆（按相关性 + scope 软偏好召回，带身份标签）
             memories = self.store.retrieve(text, k=8, context_scope=scope)
             mem_text = "\n".join(f"- {m['subject']}: {m['content']}" for m in memories)
 
-            sys_content = build_system_prompt(settings)
+            weather_text = weather.get_weather(settings.get("city", ""))
+            mood_text = self.store.get_life_state().get("mood", "")
+            sys_content = build_system_prompt(settings, weather=weather_text, mood=mood_text)
             if not self._self_avatar_desc and self.self_id:
                 self._self_avatar_desc = self._get_avatar_desc(self.self_id)
             if self._self_avatar_desc:
                 sys_content += f"\n你的头像：{self._self_avatar_desc}"
             if mem_text:
                 sys_content += f"\n\n你记得的关于对方/最近的事：\n{mem_text}"
-            # 让模型自己决定发一条还是分多条（配合下方 send_text 工具）
-            sys_content += "\n你可以只回一条消息，也可以分多条消息发：想分多条时用空行隔开每条消息，系统会拆成多条发出去。"
+
+            # 当前对话语境（自然语气，放 system 而非 user turn，避免表单感）
+            context_parts = []
+            if msg_type == "private":
+                context_parts.append(f"你在跟「{nickname}」私聊。")
+            else:
+                context_parts.append(f"你在群里，正在说话的是「{nickname}」。")
+            if avatar_desc:
+                context_parts.append(f"对方头像：{avatar_desc}")
+            if group_avatar:
+                context_parts.append(f"群头像：{group_avatar}")
+            if reply_text:
+                if reply_nick:
+                    context_parts.append(f"「{nickname}」在回 {reply_nick} 的这句：「{reply_text}」")
+                else:
+                    context_parts.append(f"「{nickname}」在回这句：「{reply_text}」")
+            if context_parts:
+                sys_content += "\n" + " ".join(context_parts)
 
             chat_messages = [{"role": "system", "content": sys_content}]
             for h in history:
                 chat_messages.append({"role": h["role"], "content": h["content"]})
-            chat_messages.append({"role": "user", "content": user_content})
+            chat_messages.append({"role": "user", "content": text})
 
-            reply_tool = {
-                "type": "function",
-                "function": {
-                    "name": "send_text",
-                    "description": "发一条回复消息给对方。可以只发一条，也可以分多条——每条消息调一次 send_text。自己决定。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"text": {"type": "string", "description": "这一条消息的内容"}},
-                        "required": ["text"],
-                    },
-                },
-            }
+            # 群消息（非 @ 别人）→ LLM 判断该不该回
+            if reply_mode == "maybe" and msg_type == "group":
+                if not self.brain.should_reply(chat_messages):
+                    return
+
             publish_tool = {
                 "type": "function",
                 "function": {
@@ -1092,26 +1129,36 @@ class QQBot:
                     },
                 },
             }
-            tools = [reply_tool] + ([publish_tool] if self.request_approval else [])
-            result = self.brain.chat_with_tools(chat_messages, tools)
-            raw_texts = []
+            # 说话走纯文本（人设活在语言层），工具只做真动作（发空间）
+            if self.request_approval:
+                result = self.brain.chat_with_tools(
+                    chat_messages, [publish_tool],
+                    temperature=REPLY_TEMPERATURE,
+                    frequency_penalty=REPLY_FREQUENCY_PENALTY,
+                    presence_penalty=REPLY_PRESENCE_PENALTY,
+                )
+            else:
+                result = {
+                    "content": self.brain.chat(
+                        chat_messages,
+                        temperature=REPLY_TEMPERATURE,
+                        frequency_penalty=REPLY_FREQUENCY_PENALTY,
+                        presence_penalty=REPLY_PRESENCE_PENALTY,
+                    ),
+                    "tool_calls": [],
+                }
+            published = False
             for tc in result.get("tool_calls", []) or []:
-                if tc.get("name") == "send_text":
-                    t = ((tc.get("arguments") or {}).get("text") or "").strip()
-                    if t:
-                        raw_texts.append(t)
-                elif tc.get("name") == "publish" and self.request_approval:
+                if tc.get("name") == "publish" and self.request_approval:
                     detail = ((tc.get("arguments") or {}).get("detail") or "").strip()
                     if detail:
                         self.request_approval("publish", detail)
-                        raw_texts.append("（发 QQ 空间动态的请求已提交，去 app 审批页同意一下）")
-            if not raw_texts and result.get("content"):
-                raw_texts.append((result.get("content") or "").strip())
-            # 每条再按空行拆（模型可能在一条里塞了空行分隔的多段），最后摊平
-            msgs = []
-            for t in raw_texts:
-                msgs.extend([p.strip() for p in re.split(r"\n\s*\n", t) if p.strip()])
-            reply = "\n".join(msgs)
+                        published = True
+            reply = (result.get("content") or "").strip()
+            if published and not reply:
+                reply = "（发动态的请求已提交，去 app 审批页同意一下）"
+            # 按空行拆成多条（正文自然分段 → 多条消息）
+            msgs = [p.strip() for p in re.split(r"\n\s*\n", reply) if p.strip()]
         except Exception as e:
             self.store.add_log("error", "error", f"LLM 回复失败: {e}")
             return
@@ -1119,19 +1166,13 @@ class QQBot:
         if not msgs:
             return  # 空回复（罕见）：不发送、不写记忆
 
-        # 回复：把模型的多条消息（可能各自超长）摊平后逐条连发；群聊只在第一条 @
-        final_msgs = []
-        for m in msgs:
-            final_msgs.extend(self._split_by_len(m))
-        self._send_chunks(group_id if msg_type == "group" else user_id, final_msgs, msg_type,
-                          at_user=(user_id if msg_type == "group" else None))
-        if msg_type == "group":
-            self._group_last_reply[group_id] = (time.time(), text)  # 记录续接话题状态
+        # 回复：text/face 混合段逐条发；群聊只在第一条 @
+        self._send_segments(group_id if msg_type == "group" else user_id, msgs, msg_type,
+                            at_user=(user_id if msg_type == "group" else None))
         self.store.add_log("info", "chat", f"[QQ] 回复 {nickname}: {reply}")
 
-        # 短期上下文回写（谁 + 说了什么 + 平台）
+        # 短期上下文回写：只补助手回复（user 那条统一存时已写）
         try:
-            self.store.add_short_term(session, "user", f"{nickname}: {text}", platform="qq")
             self.store.add_short_term(session, "assistant", reply, platform="qq")
         except Exception:
             pass
@@ -1257,6 +1298,8 @@ class QQBot:
             for seg in message:
                 if not isinstance(seg, dict):
                     continue
+                if seg.get("type") == "image":
+                    continue  # 图片 URL 不是网页，不抓
                 d = seg.get("data", {}) or {}
                 for k in ("url", "link", "target"):
                     v = d.get(k)

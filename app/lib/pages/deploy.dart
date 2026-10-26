@@ -89,7 +89,7 @@ class _DeployPageState extends State<DeployPage> {
   Future<void> _startFish() async {
     setState(() => _busy = true);
     final ok = await _termux.run(
-      'cd /data/data/com.termux/files/home/dfy && /data/data/com.termux/files/usr/bin/python -u server.py > server.log 2>&1 < /dev/null',
+      'sh /data/data/com.termux/files/home/dfy/run-fish.sh',
       workdir: '/data/data/com.termux/files/home/dfy',
     );
     _snack(ok ? '已发送启动指令，稍等几秒' : '启动指令发送失败（Termux 装了吗？）');
@@ -240,6 +240,8 @@ class _DeployPageState extends State<DeployPage> {
         return '账号离线';
       case 'waiting_scan':
         return '待扫码';
+      case 'login_service_dropped':
+        return '登录服务断连';
       case 'risk':
         return '风控';
       default:

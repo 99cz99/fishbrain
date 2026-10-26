@@ -175,6 +175,8 @@ class _LoginPageState extends State<LoginPage> {
         return '账号离线';
       case 'waiting_scan':
         return '待扫码';
+      case 'login_service_dropped':
+        return '登录服务断连';
       case 'risk':
         return '风控';
       default:

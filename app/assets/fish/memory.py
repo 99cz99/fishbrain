@@ -5,6 +5,7 @@
 #   logs       活动 + 聊天记录（监管 app 的「状态」和「聊天记录」都从这里读）
 #   short_term 短期上下文（最近对话，让回复接得上）
 import json
+import math
 import re
 import sqlite3
 import threading
@@ -14,6 +15,18 @@ import time
 DEFAULT_SETTINGS = {
     "name": "",                       # 名字（用户自设，默认空）
     "owner_qq": "",                   # 主人 QQ 号（主动冒泡发给谁）
+    "city": "",                       # 所在城市（中文名，天气感知用；空=不启用）
+    "temperament": {                  # 气质：心情衰减的基线 + 平复快慢（稳定层，心情在其上波动）
+        "valence": 0.0,               # 情绪基调 -1(偏阴郁) ~ 1(偏阳光)
+        "arousal": 0.0,               # 唤醒基调 0(沉静) ~ 1(活跃)
+        "tau_hours": 4.0,             # 平复快慢：越小平复越快
+    },
+    "self_profile": {                 # 自我画像：结构化非情绪身份（价值观/风格/喜好/边界）
+        "values": [],                 # 价值观/立场，≤4 条
+        "style": [],                  # 说话风格/口头禅，≤3 条
+        "likes": [],                  # 喜好/兴趣，≤4 条
+        "boundaries": [],             # 边界/原则，≤3 条
+    },
     "persona": "",                    # 设定（性格+口头禅都写这里，自由文本）
     "chat_scope": "all",              # all = 对谁都放开
     "midnight_ok": True,              # 半夜也可以主动找你
@@ -35,6 +48,44 @@ DEFAULT_SETTINGS = {
 # 记忆系统配置
 MAX_MEMORIES = 300              # 长期记忆总量上限（超出淘汰价值最低的）
 IMPORTANCE_REFLECT_THRESHOLD = 30  # 累计重要性越过它触发反思合并
+
+# 心情衰减：valence/arousal 读时按指数回基线，防心情卡死/螺旋
+MOOD_BASELINE_VALENCE = 0.0
+MOOD_BASELINE_AROUSAL = 0.0
+MOOD_TAU_HOURS = 4.0
+
+
+def decay_mood(valence, arousal, mood_at, now,
+               baseline_valence=MOOD_BASELINE_VALENCE,
+               baseline_arousal=MOOD_BASELINE_AROUSAL,
+               tau_hours=MOOD_TAU_HOURS):
+    """心情数值按指数衰减回基线（只读时算、不落盘）。返回 (valence, arousal)。"""
+    if not mood_at:
+        return valence, arousal
+    dt = max(0.0, now - float(mood_at))
+    if dt <= 0:
+        return valence, arousal
+    tau = max(0.5, min(72.0, float(tau_hours))) * 3600.0
+    k = math.exp(-dt / tau)
+    v = baseline_valence + (valence - baseline_valence) * k
+    a = baseline_arousal + (arousal - baseline_arousal) * k
+    return v, a
+
+
+def render_self_profile(sp):
+    """把自我画像拼成一行紧凑中文；全空返回空串。"""
+    if not isinstance(sp, dict):
+        return ""
+    labels = (("values", "价值观"), ("style", "说话风格"), ("likes", "喜好"), ("boundaries", "边界"))
+    parts = []
+    for key, label in labels:
+        items = sp.get(key) or []
+        if items:
+            parts.append(f"{label}：{'、'.join(str(x) for x in items)}")
+    if not parts:
+        return ""
+    return "你对自己的认识（逐渐形成）：" + "；".join(parts) + "。"
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (
@@ -178,11 +229,32 @@ class Store:
 
     # ---- 生命状态（它的「心」：心情 + 心跳时间，持久化，重启不丢）----
     def get_life_state(self):
-        d = self.get_settings().get("life_state")
+        settings = self.get_settings()
+        d = settings.get("life_state")
         if not isinstance(d, dict):
             d = {}
+        temp = settings.get("temperament") or {}
+        if not isinstance(temp, dict):
+            temp = {}
+        try:
+            base_v = float(temp.get("valence", MOOD_BASELINE_VALENCE))
+            base_a = float(temp.get("arousal", MOOD_BASELINE_AROUSAL))
+            tau = float(temp.get("tau_hours", MOOD_TAU_HOURS))
+        except (TypeError, ValueError):
+            base_v, base_a, tau = MOOD_BASELINE_VALENCE, MOOD_BASELINE_AROUSAL, MOOD_TAU_HOURS
+        try:
+            valence = float(d.get("valence", base_v))
+            arousal = float(d.get("arousal", base_a))
+        except (TypeError, ValueError):
+            valence, arousal = base_v, base_a
+        valence, arousal = decay_mood(valence, arousal, d.get("mood_at", 0.0), time.time(), base_v, base_a, tau)
+        mood = d.get("mood", "")
+        if abs(valence - base_v) < 0.15 and abs(arousal - base_a) < 0.3:
+            mood = "如常"
         return {
-            "mood": d.get("mood", ""),
+            "mood": mood,
+            "valence": round(valence, 3),
+            "arousal": round(arousal, 3),
             "next_wake_at": d.get("next_wake_at", 0.0),
             "last_wake_at": d.get("last_wake_at", 0.0),
         }
@@ -247,13 +319,19 @@ class Store:
         return [dict(zip(cols, r)) for r in self._conn.execute(q, args)]
 
     def retrieve(self, query, k=8, candidate_limit=50, context_scope=None):
-        """三维召回 + scope 软偏好（不硬过滤），取 top-k 活跃记忆。"""
+        """三维召回（recency+relevance+importance），按 context_scope 硬过滤隐私：
+        owner/None → 全量；group:{id} → 本群+global；private:{id} → 本人+global。"""
         with self._lock:
             now = time.time()
+            cond = "absorbed = 0"
+            args = []
+            if context_scope and context_scope.startswith(("group:", "private:")):
+                cond += " AND scope IN (?, 'global', '')"
+                args.append(context_scope)
             rows = self._conn.execute(
-                "SELECT id, kind, subject, content, importance, last_access, created_at, scope "
-                "FROM memories WHERE absorbed = 0 ORDER BY id DESC LIMIT ?",
-                (candidate_limit,),
+                f"SELECT id, kind, subject, content, importance, last_access, created_at, scope "
+                f"FROM memories WHERE {cond} ORDER BY id DESC LIMIT ?",
+                (*args, candidate_limit),
             ).fetchall()
             if not rows:
                 return []
@@ -267,14 +345,7 @@ class Store:
                 recency = 2 ** (-age / (7 * 24 * 3600))  # 7 天半衰
                 relevance = min(1.0, _overlap(query, content) + 0.3 * _overlap(query, subject))
                 imp = (int(importance or 5) or 5) / 10.0
-                # scope 软偏好：眼前这个人的 +1，主人/通用 0，别人的 -0.5（不挡在门外）
-                if context_scope and scope == context_scope:
-                    affinity = 1.0
-                elif scope in ("owner", "global", ""):
-                    affinity = 0.0
-                else:
-                    affinity = -0.5
-                score = 0.5 * recency + 3.0 * relevance + 2.0 * imp + 1.0 * affinity
+                score = 0.5 * recency + 3.0 * relevance + 2.0 * imp
                 scored.append((score, rid, kind, subject, content, scope))
             scored.sort(key=lambda x: -x[0])
             top = scored[:k]
@@ -285,20 +356,6 @@ class Store:
                 )
                 self._conn.commit()
             return [{"id": t[1], "kind": t[2], "subject": t[3], "content": t[4], "scope": t[5]} for t in top]
-
-    def relevance(self, query, candidate_limit=50):
-        """返回 query 与记忆池最相关一条的 overlap 分（0~1），用于判断「这个话题我熟不熟」。"""
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT content, subject FROM memories WHERE absorbed = 0 ORDER BY id DESC LIMIT ?",
-                (candidate_limit,),
-            ).fetchall()
-            best = 0.0
-            for content, subject in rows:
-                r = _overlap(query, content) + 0.3 * _overlap(query, subject)
-                if r > best:
-                    best = r
-            return min(1.0, best)
 
     def mark_absorbed(self, memory_ids, by_id):
         with self._lock:
@@ -349,11 +406,21 @@ class Store:
             )
             self._conn.commit()
 
-    def get_short_term(self, session, limit=20):
-        rows = self._conn.execute(
-            "SELECT role, content FROM short_term WHERE session = ? ORDER BY id DESC LIMIT ?",
-            (session, limit),
-        ).fetchall()
+    def get_short_term(self, scope=None, limit=20):
+        """短期上下文：按 context_scope 隐私层级取最近 N 条。
+        owner/None → 全渠道；group:{id} → 本群；private:{id} → 本人。"""
+        with self._lock:
+            if scope and scope != "owner":
+                session = scope.replace(":", "_", 1)
+                rows = self._conn.execute(
+                    "SELECT role, content FROM short_term WHERE session = ? ORDER BY id DESC LIMIT ?",
+                    (session, limit),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT role, content FROM short_term ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
         return [dict(zip(("role", "content"), r)) for r in rows][::-1]
 
     def clear_short_term(self):

@@ -15,7 +15,12 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   final _name = TextEditingController();
   final _ownerQq = TextEditingController();
+  final _city = TextEditingController();
   final _persona = TextEditingController();
+  final _spValues = TextEditingController();
+  final _spStyle = TextEditingController();
+  final _spLikes = TextEditingController();
+  final _spBoundaries = TextEditingController();
   final _llmApiKey = TextEditingController();
   final _llmBaseUrl = TextEditingController();
   final _llmModel = TextEditingController();
@@ -24,6 +29,8 @@ class _SettingsPageState extends State<SettingsPage> {
   final _heyboxToken = TextEditingController();
   String _llmProvider = 'openai';
   String _chatScope = 'all';
+  String _temperamentValence = '0';   // '-0.3' | '0' | '0.3'
+  String _temperamentTau = '4';       // '6' | '4' | '2'
   bool _midnight = true;
   bool _money = true;
   bool _publish = true;
@@ -42,7 +49,12 @@ class _SettingsPageState extends State<SettingsPage> {
   void dispose() {
     _name.dispose();
     _ownerQq.dispose();
+    _city.dispose();
     _persona.dispose();
+    _spValues.dispose();
+    _spStyle.dispose();
+    _spLikes.dispose();
+    _spBoundaries.dispose();
     _llmApiKey.dispose();
     _llmBaseUrl.dispose();
     _llmModel.dispose();
@@ -51,6 +63,9 @@ class _SettingsPageState extends State<SettingsPage> {
     _heyboxToken.dispose();
     super.dispose();
   }
+
+  List<String> _splitLines(String s) =>
+      s.split('\n').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
 
   Future<void> _refresh() async {
     try {
@@ -64,7 +79,26 @@ class _SettingsPageState extends State<SettingsPage> {
       setState(() {
         _name.text = s['name'] ?? '';
         _ownerQq.text = s['owner_qq'] ?? '';
+        _city.text = s['city'] ?? '';
+        Map<String, dynamic> temp = const {};
+        final t = s['temperament'];
+        if (t is Map) {
+          temp = Map<String, dynamic>.from(t);
+        }
+        final tv = (temp['valence'] as num?)?.toDouble() ?? 0.0;
+        final tt = (temp['tau_hours'] as num?)?.toDouble() ?? 4.0;
+        _temperamentValence = tv <= -0.15 ? '-0.3' : (tv >= 0.15 ? '0.3' : '0');
+        _temperamentTau = tt >= 5.5 ? '6' : (tt <= 2.5 ? '2' : '4');
         _persona.text = s['persona'] ?? '';
+        Map<String, dynamic> sp = const {};
+        final spt = s['self_profile'];
+        if (spt is Map) {
+          sp = Map<String, dynamic>.from(spt);
+        }
+        _spValues.text = (sp['values'] as List?)?.join('\n') ?? '';
+        _spStyle.text = (sp['style'] as List?)?.join('\n') ?? '';
+        _spLikes.text = (sp['likes'] as List?)?.join('\n') ?? '';
+        _spBoundaries.text = (sp['boundaries'] as List?)?.join('\n') ?? '';
         _chatScope = s['chat_scope'] ?? 'all';
         _midnight = s['midnight_ok'] ?? true;
         _money = s['approve_money'] ?? true;
@@ -87,6 +121,18 @@ class _SettingsPageState extends State<SettingsPage> {
     final body = {
       'name': _name.text,
       'owner_qq': _ownerQq.text.trim(),
+      'city': _city.text.trim(),
+      'temperament': {
+        'valence': double.parse(_temperamentValence),
+        'arousal': 0.0,
+        'tau_hours': double.parse(_temperamentTau),
+      },
+      'self_profile': {
+        'values': _splitLines(_spValues.text),
+        'style': _splitLines(_spStyle.text),
+        'likes': _splitLines(_spLikes.text),
+        'boundaries': _splitLines(_spBoundaries.text),
+      },
       'persona': _persona.text,
       'chat_scope': _chatScope,
       'midnight_ok': _midnight,
@@ -226,10 +272,47 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
                 const SizedBox(height: 16),
                 TextField(
+                  controller: _city,
+                  decoration: const InputDecoration(
+                      labelText: '城市（天气感知，中文名如「北京」，留空=不启用）',
+                      border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 16),
+                TextField(
                   controller: _persona,
                   maxLines: 4,
                   decoration: const InputDecoration(
                       labelText: '设定（性格、口头禅都写这里）', border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 24),
+                Text('自我画像（每行一条，会自动演化）', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _spValues,
+                  maxLines: 3,
+                  decoration: const InputDecoration(
+                      labelText: '价值观', border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _spStyle,
+                  maxLines: 2,
+                  decoration: const InputDecoration(
+                      labelText: '说话风格', border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _spLikes,
+                  maxLines: 3,
+                  decoration: const InputDecoration(
+                      labelText: '喜好', border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: _spBoundaries,
+                  maxLines: 2,
+                  decoration: const InputDecoration(
+                      labelText: '边界', border: OutlineInputBorder()),
                 ),
                 const SizedBox(height: 16),
                 Text('主题', style: Theme.of(context).textTheme.bodySmall),
@@ -252,6 +335,28 @@ class _SettingsPageState extends State<SettingsPage> {
                   ],
                   selected: {_chatScope},
                   onSelectionChanged: (s) => setState(() => _chatScope = s.first),
+                ),
+                const SizedBox(height: 16),
+                Text('气质（心情基线）', style: Theme.of(context).textTheme.bodySmall),
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(value: '-0.3', label: Text('偏阴郁')),
+                    ButtonSegment(value: '0', label: Text('中性')),
+                    ButtonSegment(value: '0.3', label: Text('偏阳光')),
+                  ],
+                  selected: {_temperamentValence},
+                  onSelectionChanged: (s) => setState(() => _temperamentValence = s.first),
+                ),
+                const SizedBox(height: 12),
+                Text('平复快慢', style: Theme.of(context).textTheme.bodySmall),
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(value: '6', label: Text('慢')),
+                    ButtonSegment(value: '4', label: Text('中等')),
+                    ButtonSegment(value: '2', label: Text('快')),
+                  ],
+                  selected: {_temperamentTau},
+                  onSelectionChanged: (s) => setState(() => _temperamentTau = s.first),
                 ),
                 SwitchListTile(
                   title: const Text('半夜也能主动找我'),

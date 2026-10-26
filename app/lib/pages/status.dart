@@ -112,7 +112,7 @@ class _StatusPageState extends State<StatusPage> {
   Future<void> _startFish() async {
     setState(() => _busy = true);
     final ok = await _termux.run(
-      'cd /data/data/com.termux/files/home/dfy && /data/data/com.termux/files/usr/bin/python -u server.py > server.log 2>&1 < /dev/null',
+      'sh /data/data/com.termux/files/home/dfy/run-fish.sh',
       workdir: '/data/data/com.termux/files/home/dfy',
     );
     await Future.delayed(const Duration(seconds: 3));
@@ -128,7 +128,7 @@ class _StatusPageState extends State<StatusPage> {
 
   Future<void> _stopFish() async {
     setState(() => _busy = true);
-    await _termux.run("pkill -f '[s]erver.py'");
+    await _termux.run("pkill -f '[s]erver.py'; pkill -f '[r]un-fish.sh'; rm -f /data/data/com.termux/files/home/dfy/.fish.pid");
     _snack('已停止（QQ 保持在线）');
     _refresh();
     if (mounted) setState(() => _busy = false);
@@ -136,10 +136,10 @@ class _StatusPageState extends State<StatusPage> {
 
   Future<void> _restartFish() async {
     setState(() => _busy = true);
-    await _termux.run("pkill -f '[s]erver.py'");
+    await _termux.run("pkill -f '[s]erver.py'; pkill -f '[r]un-fish.sh'; rm -f /data/data/com.termux/files/home/dfy/.fish.pid");
     await Future.delayed(const Duration(seconds: 1));
     await _termux.run(
-      'cd /data/data/com.termux/files/home/dfy && /data/data/com.termux/files/usr/bin/python -u server.py > server.log 2>&1 < /dev/null',
+      'sh /data/data/com.termux/files/home/dfy/run-fish.sh',
       workdir: '/data/data/com.termux/files/home/dfy',
     );
     await Future.delayed(const Duration(seconds: 3));

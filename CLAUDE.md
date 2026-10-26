@@ -28,17 +28,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
              OneBot v11 正向 WebSocket @ 127.0.0.1:8081
 ```
 
+**守护**：鱼脑由 `deploy/run-fish.sh`（supervisor 循环）拉起——`server.py` 崩了 2s 自动重启；「启动/停止/重启」都是对这个 supervisor 的 pkill/拉起（见「常用命令」），**不是**直接 `python -u server.py`。
+
 **生命体怎么「活」**：核心是 `life.py` 的心跳——它自己定下次醒来的时间（存 `life_state`，重启不丢），到点醒来先定「本能面 drive」（陪伴/表达/好奇/成长/存在/玩耍/none，多数时候 none=发呆），非 none 再按 drive 从工具注册表筛相关工具、用 function calling 选一个具体动作。
 
 **能力接线方式（工具注册表，不是 prompt 枚举）**：核心状态工具在 `life._core_tools()`（update_mood/schedule_next_wake/set_drive）；高层动作在 `life.action_tools()`（publish/reflect）；平台(NapCat)工具在 `qq_bot.get_tools()`（约 92 个，返回 function-calling 定义，`handle_tool` 分发）。`autonomy.DRIVE_TOOLS` 是 drive→工具名映射，`select_tools(drive)` 筛选（现在全量；工具多了再加动态路由）。加新平台 = 写个模块暴露 `get_tools()` + `handle_tool()`，核心不改（`heybox.py` 就是照 `qq_bot.py` 写的现成例子）。
 
-**记忆与回复（核心行为，改这里先读这段）**：
-- 长期记忆 `memory.py`：`memories` 表每条带 `importance`(1-10)、`scope`(owner / private:{id} / group:{id} / global，**软隔离不是硬过滤**)、`absorbed`/`absorbed_by`(反思合并)。聊天召回走 `retrieve(query, k, context_scope)`，打分 `0.5×recency + 3.0×relevance + 2.0×importance + 1.0×scope亲和`（relevance 用字符 2-gram `_overlap`）。写入 `consolidate_memory` **只喂「对方说」不喂「我回」**（结构性堵 LLM 谎话固化），`reflect_memories` 把零碎记忆压成高级洞察、旧记忆软删除，`MAX_MEMORIES=300` 超了淘汰「importance×访问衰减」最低的。
-- 回复策略 `qq_bot.py:_should_reply`：私聊必回、群 @必回、群里其他人走「主动插话漏斗」（预筛→相关性`Store.relevance`→概率→冷却 10 分钟最多 2 次）；群回复默认只 `@` 不 `cq_reply`，续接话题 3 分钟窗口。调参常量在 qq_bot.py 顶部（RELEVANCE_MIN / PROACTIVE_* / FOLLOWUP_WINDOW_SEC）。
-- `build_system_prompt` 注入 `life_state.mood`（让回复带心情）+ 一句「有自己的想法不是客服」的观点引导。
-- 回复可「分多条」：`_on_message` 走 `chat_with_tools`（带 `send_text` + `publish` 工具，但 deepseek-flash 思考模式**不支持强制 `tool_choice`**、模型基本不调工具），实际靠「模型返回带空行的多段文字 → **按空行拆成多条**」发出；`send_text`/主动消息超长按 `MAX_MSG_LEN=4000` 拆、片间 `MSG_SEND_DELAY=0.6s`，群聊只在第一条 `@`。
+**记忆与回复（核心行为，改这里先读这段）**——原则：**智能体记忆统一**（私聊/群聊/各平台都是同一个智能体的记忆，不按渠道隔离；参考 Generative Agents「统一存+按相关性取」/ MemGPT「工作记忆+召回记忆」/ aidevops「隐私边界」）。
+- 长期记忆 `memory.py`：`memories` 表每条带 `importance`(1-10)、`scope`(owner / private:{id} / group:{id} / global，**只是「来源」标签，不是召回偏好**)、`absorbed`/`absorbed_by`(反思合并)。`retrieve(query, k, context_scope)` 打分 `0.5×recency + 3.0×relevance + 2.0×importance`（relevance = 字符 2-gram `_overlap`，**无 scope 亲和项**）；**载入时按 context_scope 硬过滤隐私**——`owner` 全量、`group:{id}` 只召回本群+global、`private:{id}` 只召回本人+global（群聊不载入私聊记忆）。`consolidate_memory` **只喂「对方说」不喂「我回」**（结构性堵 LLM 谎话固化），`reflect_memories` 压成高级洞察、旧记忆软删除，`MAX_MEMORIES=300` 超了淘汰「importance×访问衰减」最低的。
+- 短期上下文 `memory.py:short_term`：**统一存**——`_on_message` 在回复决策**之前**就把所有消息（含非 @ 群消息）写进去、带来源标签（`[群 X] 某人:` / `[私聊] 某人:`）；`get_short_term(scope)` 按同一套隐私层级取「最近 N 条」（owner 全渠道、群只看本群、私聊只看本人）。
+- 回复策略 `qq_bot.py:_should_reply_quick`：私聊/@我必回、@别人不回；**其它群消息交给 `brain.should_reply()`（LLM 语义判断「该不该回」，不是关键词）**。旧的「主动插话漏斗」（`Store.relevance` 2-gram + 概率 + follow-up 重叠）已删。
+- `build_system_prompt` 注入 `life_state.mood`（让心情**隐式**影响语气、别直说）+ 一句「有自己的想法不是客服」的观点引导。心情已结构化：`life_state` 带 `mood`(标签) + `valence`(-1..1)/`arousal`(0..1)，读时按指数衰减回**气质基线**（`memory.decay_mood`），基线与 τ 由 `temperament` 设定决定（默认 τ=4h、回 0），防心情卡死/螺旋。
+- 自身人格画像 `settings.self_profile`（`values`/`style`/`likes`/`boundaries` 四维）经 `render_self_profile()` 注入 system/life prompt；`autonomy.distill_self_profile()` 从 `subject="self"` 洞察流加性提炼（去重+封顶+不与人设冲突，`allow_self_evolve` 门控 + 1h 节流，手动 `/growth/evolve` 强制跑）；`evolve()` 已**不再整段重写 `persona`**（人格演化交给 distill）。
+- 回复走纯文本、可「分多条」：`_on_message` 只用 `chat`（无审批通道时）或 `chat_with_tools`（**只带 `publish` 发空间工具**，`send_text` 工具已删——说话=纯文本、人设活在语言层，工具只做真动作）；多段靠正文自然空行 → 按空行拆成多条；回复加 `temperature=1.1`/`frequency_penalty=0.4`/`presence_penalty=0.2`（只聊天路径，JSON/判断路径不加）；`send_text` 方法/主动消息超长按 `MAX_MSG_LEN=4000` 拆、片间 `MSG_SEND_DELAY=0.6s`，群聊只在第一条 `@`。
 
-**QQ 数据流**：QQ 消息 → NapCat → OneBot WS(8081) → `qq_bot.py` → `brain.chat_with_tools`（带 `send_text`/`publish` 工具）→ 回复 → NapCat → QQ。
+**QQ 数据流**：QQ 消息 → NapCat → OneBot WS(8081) → `qq_bot.py` → `brain.chat`/`chat_with_tools`（只带 `publish` 工具）→ 回复 → NapCat → QQ。
 
 **HTTP 端点**（server.py）：`/status /logs /chat /memories /settings /llm /usage /approval/pending /command /qrcode /life/state /life/wake /qq/start /qq/stop /qq/status /qq/api /qq/refresh_qr /qq/apply_onebot /deploy/qq /deploy/status /heybox /heybox/status /heybox/sign /growth/evolve /persona/reset`。
 
@@ -64,10 +68,14 @@ adb shell pm grant com.dfy.dfy_app com.termux.permission.RUN_COMMAND   # 重装�
 **部署鱼脑到手机**（改完 `fish/*.py` 后；Windows Git Bash 记得前缀 `MSYS_NO_PATHCONV=1`，否则 `/data/...` 被转成 `E:/Git/...`）：
 ```bash
 MSYS_NO_PATHCONV=1 adb push fish/*.py /data/local/tmp/
-MSYS_NO_PATHCONV=1 adb shell "run-as com.termux cp /data/local/tmp/*.py /data/data/com.termux/files/home/dfy/"
-# 起/重启鱼脑（run-as 实测能 exec python，见下方「MSYS 路径转换坑」）
-MSYS_NO_PATHCONV=1 adb shell "run-as com.termux pkill -f 'python.*server.py'"
-MSYS_NO_PATHCONV=1 adb shell "run-as com.termux sh -c 'cd /data/data/com.termux/files/home/dfy && /data/data/com.termux/files/usr/bin/python -u server.py > server.log 2>&1 < /dev/null &'"
+MSYS_NO_PATHCONV=1 adb push deploy/run-fish.sh /data/local/tmp/
+MSYS_NO_PATHCONV=1 adb shell "run-as com.termux cp /data/local/tmp/*.py /data/local/tmp/run-fish.sh /data/data/com.termux/files/home/dfy/"
+# 停鱼脑（supervisor + server.py 一起杀，再清 pid）
+MSYS_NO_PATHCONV=1 adb shell "run-as com.termux pkill -f '[s]erver.py'"
+MSYS_NO_PATHCONV=1 adb shell "run-as com.termux pkill -f '[r]un-fish.sh'"
+MSYS_NO_PATHCONV=1 adb shell "run-as com.termux rm -f /data/data/com.termux/files/home/dfy/.fish.pid"
+# 起鱼脑（supervisor 循环：server.py 崩了自动拉起。别加 cd 前缀——会让后台 subshell 占着 adb 管道导致命令挂住；用绝对路径 + 整体重定向）
+MSYS_NO_PATHCONV=1 adb shell "run-as com.termux sh -c 'sh /data/data/com.termux/files/home/dfy/run-fish.sh >> /data/data/com.termux/files/home/dfy/server.log 2>&1 < /dev/null &'"
 ```
 
 ## 关键约定 / 坑（硬经验，别重踩）
@@ -78,19 +86,22 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux sh -c 'cd /data/data/com.termux/
 - **QQ 用 NapCat 不是 Lagrange**：Lagrange 签名服务器停服。NapCat 在 proot-Debian 跑 linuxqq + xvfb，flags：`--no-sandbox --disable-gpu --disable-dev-shm-usage --no-zygote --use-gl=swiftshader`。
 - **proot 版本坑（血泪）**：proot **5.1.107.99 有段错误回归**（跑 linuxqq 就 `proot warning: signal 11` 崩），5.1.107.100 修复。`deploy/setup-qq.sh` 已 pin 5.1.107.100。**QQ 起不来、proot 报 signal 11，先查 proot 版本**。另外 proot 是动态链接 libtalloc/libtermux-exec，`pkg upgrade` 会升级这些依赖。
 - **Python 升级坑**：Termux Python 3.13→3.14 会搞坏 `proot-distro` 的 shebang（`#!/.../python3.13` 指向被删的版本）+ 把 `websocket-client` 留在旧 site-packages。症状：proot-distro 报 `No such file or directory`、`import websocket` 失败。修：`pkg upgrade` + `pip install websocket-client`。
-- **QQ 登录不持久（keystore 落不了盘的根因已定位）**：keystore 在 `~/.config/QQ/global/nt_data/Login/.{uin}`，0 字节=没落盘。**实测 SIGTERM + `sleep 15` 优雅退出后 keystore 仍是 0 字节**——根因不是「没走到优雅退出」，而是 **proot 里 device.json（设备指纹）生成不出**（linuxqq 生成设备指纹要读硬件信息，ptrace 模拟下 syscall 失败），keystore 是加密凭据、拿不到 device.json 的设备密钥就写不进。佐证：mmkv（不加密普通状态）能正常写盘，keystore（加密）写不进。根治靠 chroot 绕开 proot。试过伪造 `/sys` 的 MAC、固定 hostname（`proot-distro login --hostname`）**均无效**——device.json 需**完整硬件序列号**（CPU/磁盘/主板 serial），proot 里 `/proc` 透传宿主（ARM 无 serial 字段）、`/sys` 空，读不到且伪造不了。QQ 风控会拦（人脸/`ErrCode 3`/「已登录」），**别频繁重登**。
-- **QQ 掉线自愈 + 诊断字段**：`qq_keep_alive` 除了「进程没了自动拉起」，还会在「进程活着但 WS 8081 掉线、无新鲜二维码」（`_qq_stale`）持续超过 `QQ_STALE_GRACE_SECONDS=300`、且过 `QQ_STALE_RESTART_COOLDOWN=300` 后自动优雅重启 QQ（`_restart_qq`）。`/qq/status` 新增 `stale`（bool）与 `login_reason`（`nt_timeout`/`offline`/`waiting_scan`/`risk`/`login_error_N`/`unknown`，由 `_parse_qq_log_state` 解析 `/root/napcat/qq.log` 尾部得出）；ErrCode 无官方语义、只中性保留码号，风控只看明确文案（人脸/安全验证/冻结等）；app 部署页/登录页据此显示「掉线（自愈中）+ 原因」。
+- **QQ 登录不持久（keystore 落不了盘的根因已定位）**：keystore 在 `~/.config/QQ/global/nt_data/Login/.{uin}`，0 字节=没落盘。**实测 SIGTERM + `sleep 15` 优雅退出后 keystore 仍是 0 字节**——根因不是「没走到优雅退出」，而是 **proot 里 device.json（设备指纹）生成不出**（linuxqq 生成设备指纹要读硬件信息，ptrace 模拟下 syscall 失败），keystore 是加密凭据、拿不到 device.json 的设备密钥就写不进。佐证：mmkv（不加密普通状态）能正常写盘，keystore（加密）写不进。根治靠 chroot 绕开 proot。试过伪造 `/sys` 的 MAC、固定 hostname（`proot-distro login --hostname`）**均无效**——device.json 需**完整硬件序列号**（CPU/磁盘/主板 serial），proot 里 `/proc` 透传宿主（ARM 无 serial 字段）、`/sys` 空，读不到且伪造不了。QQ 风控会拦（人脸/`ErrCode 3`/「已登录」），**别频繁重登**。后续调研（NapCat PR #2099 / DeepWiki）发现设备标识在 Linux 上可能并非「CPU/磁盘/主板 serial」，而是「MAC 的 ROT13 编码 + `/etc/machine-id` 的 MD5」、存于 QQ 数据目录 `Registry20/machine-info`（回退链优先读 `machineid-info` 文件），NapCat 有 GUID 管理（`SetMacMachineId`/`RestoreMacInfoBackup`，PR 以 macOS 为主，Linux 需实测）。rootless 可先试「预置固定 machine-info / 快捷登录 `-q`」，chroot 是兜底。
+- **QQ 掉线自愈 + 诊断字段**：`qq_keep_alive` 只在「进程没了」时自动拉起；「进程活着但 WS 8081 掉线、无新鲜二维码」（`_qq_stale`）时**不再自动重启**（proot 下 keystore 落不了盘、重启 linuxqq 必丢登录，自动重启 = 自动掉登录），改为按 `QQ_STALE_RESTART_COOLDOWN=900` 节流记一条 warn 日志、交回 `qq_bot` 的 5s 重连去恢复 WS。`/qq/status` 有 `stale`（bool）与 `login_reason`（`nt_timeout`/`offline`/`login_service_dropped`/`waiting_scan`/`risk`/`login_error_N`/`unknown`，由 `_parse_qq_log_state` 解析 `/root/napcat/qq.log` 尾部得出）；ErrCode 无官方语义、只中性保留码号，风控只看明确文案（人脸/安全验证/冻结等）；app 部署页/登录页据此显示「掉线（自愈中）+ 原因」。
+- **`/qq/status` 的 `online` 是「账号真登录」不是「端口通」**：`online = qq_bot.connected and qq_bot.self_id`（`_qq_really_online()`），不是 TCP 探活——账号掉线/NapCat 卡死时 8081 端口仍能连上，TCP 探活会假报「在线」。`qq_bot._loop` 断开即清 `self_id`。
 - **QQ 自动拉起熔断**：`qq_keep_alive` 连续 `QQ_AUTO_MAX_FAIL=5` 次自动拉起仍无法稳定在线 → 熔断 `QQ_AUTO_CIRCUIT_SECONDS=1800` 秒不拉起；只有「持续稳定在线 `QQ_AUTO_STABLE_SECONDS=300` 秒」或「用户显式启动 QQ」才清零。`/qq/status` 暴露 `auto_circuit`/`auto_fail_count`，app 部署页显示「已熔断」提示。注意：`qq_start(reset_circuit=False)` 是参数化的——只有 `/qq/start` 端点、`qq_refresh_qr` 传 `reset_circuit=True` 清零，自动拉起路径不传（否则计数永远累加不到阈值）。
 - **发 QQ 空间动态（publish 审批链路）**：`publish` 工具（`life.action_tools()` 和聊天场景都有）走审批 `kind="publish"`，summary 是**纯文本 detail（正文）非 JSON**；同意后 `execute_approval` 调 `qq_bot.send_qzone_mood(text)` → `call_api("send_qzone_msg")` 发说说。坑：NapCat action 名是 **snake_case `send_qzone_msg`**，不是 `SendQzoneMsg`；`send_qzone_mood` 里失败（retcode != 0）会 `add_log("error","qq",...)` 记录。
 - **QQ 断连诊断信号优先级（血泪，别误判）**：查 qq.log / 鱼脑日志时这几个信号极易混淆——①「测试Packet 超时」是**误报**，每次登录都有、超时后 QQ 照常收发消息，不是断连；②「等待网络连接/网络已连接」是**启动噪音**，每次 QQ 重启都有，不是断连；③「账号状态变更为离线」才是**账号真掉线**；④ 鱼脑侧 `QQ 连接断开...Connection timed out`（recv 30 秒超时）或 `Connection refused` 才是**断连重连**，根因是 **NapCat 在 proot 里间歇性卡住**（8081 WS 服务时好时坏）。「Connection timed out」= NapCat 心跳（30s 一次）中断 30 秒，可据此拿到卡住的精确时间点。
 - **诊断 QQ 的两个小坑**：① 判断 QQ 进程用 `ps -A -o CMD`（完整参数），`ps -o NAME` 只显示进程名 `qq`、会漏掉 `qq --no-sandbox` 参数导致误判「QQ 没在跑」；② `/qq/stop` 是 **POST** 端点（GET 返回 `{"error":"not found"}`），curl 要带 `-X POST`；③ 判断 QQ 状态用 `qrcode.png` 的 mtime，**别信 qq.log 文本**——NapCat 的文本日志在 proot 里会停写、只剩 hash 乱码，容易误判「QQ 卡住」而实际已出码。
 - **OneBot 消息格式**：NapCat `messagePostFormat="array"`，消息是 CQ 段数组；`qq_bot._extract_text` 处理 text/image/face/at/reply 段，引用消息走 `get_msg`（`call_api` 用 echo 匹配响应，事件在独立 worker 线程避免死锁）。
+- **回复支持 QQ 系统表情**：LLM 在正文写 `[表情:名字]`（如 `[表情:呲牙]`），`qq_bot._to_segments` 解析成 `face` 段、`_send_segments` 混合发送；`FACE_IDS` 是名字→face_id 映射，教学句从 `FACE_IDS.keys()` 生成——**别两处手改表情列表**。图片表情包（mface/贴纸库）未做。
+- **图片 URL 别当网页抓**：`qq_bot._extract_urls` 必须跳过 `image` 段（图片 `data.url` 不是网页，`_fetch_url_content` 抓了会把 JPEG 原始字节当正文塞进上下文、变一堆二进制垃圾）。图片内容是走 `_get_image_bytes` + `_vision_or_ocr` 的，不是 URL 抓取。
 - **NapCat 首次登录的 OneBot 配置是空的**：`onebot11_<uin>.json` 首次由 NapCat 自动生成时 `websocketServers` 是 `[]`（不监听 8081），所以扫码登录后 qq_bot 还连不上、一直「连接断开 5 秒重连」。**必须登录后写 8081 模板 + 重启 QQ 才生效**——`server.py:apply_onebot` 从配置目录文件名探测 uin（`_find_login_uin` 只认最近 `QQ_LOGIN_UIN_FRESH_SECONDS=600` 秒内生成的文件，旧文件跨会话残留不算「已登录」）、写 `~/dfy/onebot11.json` 模板、后台重启 QQ（`_restart_qq`），`_onebot_has_ws` 判断已配好就跳过。这是「账号在线」之前的最后一个坎。
 - **QQ 起不来的另一个坑：`/root/napcat` 目录不存在**：`QQ_START_CMD` 把日志写到 `/root/napcat/qq.log`、`xvfb.log`，但 `setup-qq.sh` 没建这个目录 → 重定向失败、`./qq` 根本没跑（症状：部署页「未运行」）。现在 `QQ_START_CMD` 开头 `mkdir -p /root/napcat` 兜底，`setup-qq.sh` 也建了 `$DEBIAN_ROOTFS/root/napcat`。
 - **NapCat 下载镜像会失效**：`setup-qq.sh` 里 GitHub 回退镜像 `ghproxy.net` 已死（502），现用 `gh-proxy.com` + `gh.llkk.cc` 双回退（`NAPCAT_ZIP_GH`/`NAPCAT_ZIP_GH2`）。这类第三方 GitHub 镜像经常挂，**下次 NapCat 下载失败先 `curl -I` 测这些 URL 还活着没**。linuxqq 的腾讯 CDN 固定版本 URL 也是「会过期」的老隐患。
 - **app 起鱼脑走 TermuxRunner**：`app/lib/termux.dart` 经 MethodChannel `dfy/termux`（`MainActivity.kt`）`startForegroundService(intent)` 触发 Termux RunCommandService（是服务、不是广播）。**AndroidManifest 必须有 `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_SPECIAL_USE` 权限**——之前「启动失败」就是漏了 FOREGROUND_SERVICE。冷启动命令前台阻塞、无 `&`（带 `&` 会被 Termux 清掉）。`run()` 发完即忘（起长驻 server.py 用）；`runAndWait()` 挂 `PendingIntent`（extra `com.termux.RUN_COMMAND_PENDING_INTENT`）+ 动态 BroadcastReceiver，回传 `result` bundle 的 `stdout`/`stderr`/`exitCode`（装环境等有限时长命令用）。**血泪：这个 PendingIntent 必须用 `FLAG_MUTABLE`，不能用 `FLAG_IMMUTABLE`**——IMMUTABLE 会让 Termux `send(code, resultIntent)` 的结果 extras 合并不进来，receiver 只能拿到 base intent 的 `sessionId`、拿不到 `result` bundle（`exitCode=-1` 静默误判失败）。结果 bundle 的 key 是 `"result"`（外层）、`"stdout"`/`"stderr"`/`"exitCode"`（内层）。
 - **Termux 命令的两个前置，缺一静默失败**（非技术用户从 0 部署的头号坑）：① `allow-external-apps = true`（`~/.termux/termux.properties`，受 ContentProvider 保护、app 代写不了，只能引导用户在 Termux 里粘一行再 `termux-reload-settings`）；② `com.termux.permission.RUN_COMMAND` 权限（Android 设置→应用→权限，或 `pm grant`）。`MainActivity.preflight()` + 向导 Step 0「环境检查」现在会逐项显示 ✅/❌ 并给修复指引。
-- **app 的「启动/停止/重启」只管鱼脑，不管 QQ**：`status.dart` 已把这三个按钮与 QQ 解耦（只 `pkill server.py`/起 server.py，不调 `qqStop`/`qqStart`）。QQ 的启停走「部署」页单独的「启动 QQ / 停止 QQ」。这样重启鱼脑不会连带重启 QQ、不用重新扫码。
+- **app 的「启动/停止/重启」只管鱼脑，不管 QQ**：`status.dart` 已把这三个按钮与 QQ 解耦（pkill `run-fish.sh`+`server.py` / 起 `run-fish.sh`，即 supervisor；不调 `qqStop`/`qqStart`）。QQ 的启停走「部署」页单独的「启动 QQ / 停止 QQ」。这样重启鱼脑不会连带重启 QQ、不用重新扫码。
 - **RUN_COMMAND 权限是运行时权限，安装不自动给**：`com.termux.permission.RUN_COMMAND`（`prot=dangerous`）控制 app 能否叫 Termux 跑 shell。fresh install 默认**未授予**，app 触发 Termux 会静默失败——现在由向导 Step 0「环境检查」检测 +「授权限」弹窗兜底。`adb install -r`（更新）实测在 Android 15/16 **不会撤**已授的权限（旧笔记「会撤」是错的）；开发机手动补用 `pm grant com.dfy.dfy_app com.termux.permission.RUN_COMMAND`。
 - **MSYS 路径转换坑（Windows Git Bash 下 adb 头号坑）**：`/data/...`、`/tmp/...` 这类 `/` 开头的参数会被 Git Bash 转成 `E:/Git/...` 再交给 adb，报 `run-as: exec failed ... No such file or directory`——**极像「run-as 不能 exec python」，其实是路径被转**。修法：命令前缀 `MSYS_NO_PATHCONV=1`，凡是 adb 命令带 `/data/...` 都加。
 - **adb `run-as` 能 exec python、能 cd（这台机实测，别信「Android 16 收紧」）**：`run-as com.termux /data/data/com.termux/files/usr/bin/python --version` 返回 3.14.8，`run-as com.termux sh -c 'cd .../dfy && pwd'` 也成。所以起/重启鱼脑可直接走 adb（见「部署鱼脑」命令），不必只靠 app「启动」或手动 Termux。老的「收紧」印象是把上面的 MSYS 路径转换误判了。

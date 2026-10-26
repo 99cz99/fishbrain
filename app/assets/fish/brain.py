@@ -64,6 +64,18 @@ class Brain:
             return self._chat_gemini(cfg, messages, **kwargs)
         return self._chat_openai(cfg, messages, **kwargs)
 
+    def should_reply(self, messages):
+        """让 LLM 判断：上面最后这条群消息该不该由我回。返回 True/False。"""
+        judge = messages + [{
+            "role": "system",
+            "content": "只做判断，别写回复内容。上面最后这条群消息该不该由你回？判断标准：是不是在跟你说话（@你/喊你名字/问你/接着你的话），或内容是不是你很有话说、很想插一嘴。只输出 true 或 false。",
+        }]
+        try:
+            r = (self.chat(judge) or "").strip().lower()
+            return ("true" in r) and ("false" not in r)
+        except Exception:
+            return False
+
     def chat_with_tools(self, messages, tools, **kwargs):
         """带工具调用的 chat（OpenAI 兼容 function calling）。
         返回 {"content": str, "tool_calls": [{"name": str, "arguments": dict}, ...]}。

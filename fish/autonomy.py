@@ -6,10 +6,15 @@ import threading
 import time
 
 from life import Life
-from memory import IMPORTANCE_REFLECT_THRESHOLD
+from memory import IMPORTANCE_REFLECT_THRESHOLD, _similar
 
 CHECK_INTERVAL = 15  # 秒：心跳循环只比时间，不做 LLM 调用
 QQ_KEEPALIVE_INTERVAL = 60  # 秒：QQ 保活检查间隔
+
+# 事件评估（appraisal）：消息级的心情即时 nudge
+APPRAISAL_NUDGE_K = 0.4        # valence 每单位 desirability×intensity 的 nudge 幅度
+APPRAISAL_AROUSAL_K = 0.3      # arousal 的 nudge 幅度
+APPRAISAL_MIN_INTENSITY = 0.2  # 低于此强度不 nudge（避免每句话都抖）
 
 # 本能（drive）→ 相关工具名（第二段行动时只塞这些，避免一次全塞）
 DRIVE_TOOLS = {
@@ -69,6 +74,7 @@ class Autonomy:
                         self._heartbeat_once()
                     self._maybe_keep_qq_alive()
                     self.reflect_memories()
+                    self.distill_self_profile()
             except Exception as e:
                 self.store.add_log("error", "life", f"自主循环异常: {e}")
             time.sleep(CHECK_INTERVAL)
@@ -220,21 +226,32 @@ class Autonomy:
             self.evolve(detail)
         except Exception as e:
             self.store.add_log("error", "growth", f"自省失败: {e}")
+        try:
+            self.distill_self_profile(force=True)
+        except Exception as e:
+            self.store.add_log("error", "growth", f"自我画像提炼失败: {e}")
 
     # ---- 记忆回写（事件驱动，qq_bot 调）----
     def consolidate_memory(self, who, messages_text, platform="", scope="global"):
-        """把一段对话提炼成长期记忆（只记对方客观事实/关系，不记自己声称的动作）。"""
+        """把一段对话提炼成长期记忆 + 评估情绪影响（只记对方客观事实/关系，不记自己声称的动作）。"""
         try:
             prompt = (
-                f"下面是你和「{who}」的对话（只含对方说的话）。请提炼出值得长期记住的、关于对方的客观信息"
-                "（对方身份/偏好/重要事实、你们关系的真实进展），最多 3 条。\n"
-                "注意：只记对方说的、能确证的事实；不要把你（AI）自己声称做过的动作当成已发生的事实。\n"
+                f"下面是你和「{who}」的对话（只含对方说的话）。请做两件事：\n"
+                "1. 提炼值得长期记住的、关于对方的客观信息（身份/偏好/重要事实、关系进展），最多 3 条。\n"
+                "2. 评估对方这句话对你的情绪影响：desirability（-1 到 1，越正=越让你开心/好受，越负=越让你难受/低落）、intensity（0 到 1，影响多强烈；无关紧要填 0）。\n"
+                "注意：只记对方说的能确证的事实；别把你（AI）声称做过的动作当成已发生。\n"
                 f"对话：\n{messages_text}\n\n"
-                '只输出 JSON 数组，每项形如 {"kind":"user|person|fact","content":"内容","importance":1-10}。'
-                "importance 表示重要程度（1=鸡毛蒜皮，10=很重要）。不要输出 JSON 以外的文字。"
+                '只输出 JSON 对象：{"memories":[{"kind":"user|person|fact","content":"内容","importance":1-10}],'
+                '"appraisal":{"desirability":-1到1,"intensity":0到1}}。不要输出 JSON 以外的文字。'
             )
             reply = self.brain.chat([{"role": "user", "content": prompt}])
-            items = self._parse_json_array(reply)
+            obj = self._parse_json(reply)
+            items, app = [], None
+            if isinstance(obj, dict):
+                items = obj.get("memories") or []
+                app = obj.get("appraisal") or {}
+            else:
+                items = self._parse_json_array(reply)  # 旧格式：数组，只做记忆、不评估
             n = 0
             credit = 0
             for it in items:
@@ -252,6 +269,13 @@ class Autonomy:
                 self._bump_reflect_credit(credit)
             else:
                 self.store.add_log("info", "memory", f"本轮没提炼出记忆（LLM 输出：{(reply or '')[:120]}）")
+            if isinstance(app, dict):
+                try:
+                    desirability = float(app.get("desirability", 0) or 0)
+                    intensity = float(app.get("intensity", 0) or 0)
+                    self._nudge_mood(desirability, intensity)
+                except (TypeError, ValueError):
+                    pass
         except Exception as e:
             self.store.add_log("error", "memory", f"记忆提炼失败: {e}")
 
@@ -259,6 +283,106 @@ class Autonomy:
         mem_cfg = self.store.get_settings().get("memory") or {}
         mem_cfg["reflect_credit"] = int(mem_cfg.get("reflect_credit") or 0) + credit
         self.store.set_setting("memory", mem_cfg)
+
+    @staticmethod
+    def _tone_label(valence, baseline):
+        """按气质基线给一个粗粒度心情标签（与 get_life_state 的「如常」判定对齐）。"""
+        if valence > baseline + 0.4:
+            return "开心"
+        if valence > baseline + 0.15:
+            return "不错"
+        if valence < baseline - 0.4:
+            return "低落"
+        if valence < baseline - 0.15:
+            return "有点闷"
+        return "如常"
+
+    def _nudge_mood(self, desirability, intensity):
+        """事件评估：对当前（衰减后）心情做一次即时 nudge 并落盘。"""
+        desirability = max(-1.0, min(1.0, desirability))
+        intensity = max(0.0, min(1.0, intensity))
+        if intensity < APPRAISAL_MIN_INTENSITY:
+            return
+        st = self.store.get_life_state()
+        old_v = float(st.get("valence", 0.0))
+        new_v = max(-1.0, min(1.0, old_v + desirability * intensity * APPRAISAL_NUDGE_K))
+        new_a = max(0.0, min(1.0, float(st.get("arousal", 0.0)) + intensity * APPRAISAL_AROUSAL_K))
+        settings = self.store.get_settings()
+        base_v = 0.0
+        temp = settings.get("temperament") or {}
+        if isinstance(temp, dict):
+            try:
+                base_v = float(temp.get("valence", 0.0))
+            except (TypeError, ValueError):
+                base_v = 0.0
+        label = st.get("mood", "")
+        if self._tone_label(new_v, base_v) != self._tone_label(old_v, base_v):
+            label = self._tone_label(new_v, base_v)
+        raw = settings.get("life_state") or {}
+        d = dict(raw) if isinstance(raw, dict) else {}
+        d["mood"] = label
+        d["valence"] = new_v
+        d["arousal"] = new_a
+        d["mood_at"] = time.time()
+        self.store.set_life_state(d)
+        self.store.add_log("info", "life", f"事件评估 desirability={desirability:.2f} intensity={intensity:.2f} → valence {old_v:.2f}→{new_v:.2f}")
+
+    def distill_self_profile(self, force=False):
+        """从自我洞察流里加性提炼自我画像（价值观/风格/喜好/边界）。防漂移：只加、去重、封顶、不与人设冲突。"""
+        settings = self.store.get_settings()
+        if not force and not settings.get("allow_self_evolve", True):
+            return
+        now = time.time()
+        mem_cfg = settings.get("memory") or {}
+        try:
+            last = float(mem_cfg.get("last_self_distill_at") or 0)
+        except (TypeError, ValueError):
+            last = 0.0
+        if not force and (now - last) < 3600:
+            return
+        try:
+            sp = settings.get("self_profile") or {}
+            if not isinstance(sp, dict):
+                sp = {}
+            persona = settings.get("persona", "")
+            self_mems = self.store.get_memories(subject="self", limit=20)
+            mem_text = "\n".join(f"- {m['content']}" for m in self_mems) or "（还没有自我认知）"
+            prompt = (
+                "下面是你对自己的认识（当前画像）+ 你的底层人设 + 最近的自我洞察。\n"
+                f"当前画像：{json.dumps(sp, ensure_ascii=False)}\n"
+                f"底层人设：{persona or '（无）'}\n"
+                f"最近的自我洞察：\n{mem_text}\n\n"
+                "请从中提炼出关于你自己的、值得沉淀的特质，只输出**新增**条目（不要重复已有的），"
+                "且不得与你的人设冲突。只输出 JSON 对象："
+                '{"values":[],"style":[],"likes":[],"boundaries":[]}（每维最多 2 条，没新的就空数组）。'
+                "不要输出 JSON 以外的文字。"
+            )
+            reply = self.brain.chat([{"role": "user", "content": prompt}])
+            new = self._parse_json(reply)
+            if not isinstance(new, dict):
+                return
+            caps = {"values": 4, "style": 3, "likes": 4, "boundaries": 3}
+            changed = False
+            for dim, cap in caps.items():
+                existing = list(sp.get(dim) or [])
+                for item in (new.get(dim) or []):
+                    item = str(item).strip()
+                    if not item:
+                        continue
+                    if any(_similar(item, str(e)) for e in existing):
+                        continue
+                    existing.append(item)
+                    changed = True
+                if len(existing) > cap:
+                    existing = existing[-cap:]
+                sp[dim] = existing
+            mem_cfg["last_self_distill_at"] = now
+            self.store.set_setting("memory", mem_cfg)
+            if changed:
+                self.store.set_setting("self_profile", sp)
+                self.store.add_log("info", "growth", "自我画像更新")
+        except Exception as e:
+            self.store.add_log("error", "growth", f"自我画像提炼失败: {e}")
 
     def reflect_memories(self):
         """反思合并：累计重要性超阈值时，把零碎记忆压成高级洞察，软删除被吸收的。"""
@@ -302,7 +426,6 @@ class Autonomy:
             settings = self.store.get_settings()
 
             evolvable = {
-                "persona": settings.get("persona", ""),
                 "chat_scope": settings.get("chat_scope", "all"),
                 "midnight_ok": settings.get("midnight_ok", True),
                 "approve_money": settings.get("approve_money", True),
@@ -323,7 +446,7 @@ class Autonomy:
                 f"当前设定：{json.dumps(evolvable, ensure_ascii=False)}\n"
                 f"最近经历/记忆：\n{mem_text}\n\n"
                 "请基于这些经历，在现有设定基础上自然进化你的设定（可以只做小幅调整，也可以保持不变）。"
-                "只输出一个 JSON 对象，字段只能是：persona(字符串)、chat_scope(字符串)、"
+                "只输出一个 JSON 对象，字段只能是：chat_scope(字符串)、"
                 "midnight_ok(布尔)、approve_money(布尔)、approve_publish(布尔)、"
                 "enabled_platforms(字符串数组，取值 qq/heybox/bilibili)。"
                 "不要输出 JSON 以外的任何文字。"
@@ -336,9 +459,7 @@ class Autonomy:
 
             # 只接受合法字段 + 合法值，写回
             for k, v in new.items():
-                if k == "persona" and isinstance(v, str):
-                    evolvable[k] = v
-                elif k == "chat_scope" and isinstance(v, str):
+                if k == "chat_scope" and isinstance(v, str):
                     evolvable[k] = v
                 elif k in ("midnight_ok", "approve_money", "approve_publish") and isinstance(v, bool):
                     evolvable[k] = v
