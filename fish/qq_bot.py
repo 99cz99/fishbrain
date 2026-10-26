@@ -1067,8 +1067,9 @@ class QQBot:
         # 统一存 + 记日志：所有消息（含非 @ 群消息）都进短期上下文 + 聊天日志，带渠道标签
         session = f"private_{user_id}" if msg_type == "private" else f"group_{group_id}"
         channel = f"[群 {group_id}]" if msg_type == "group" else "[私聊]"
+        written_user = f"{channel} {nickname}: {text}"  # 原始文本，下面拼上下文时用它剔除当前这条
         try:
-            self.store.add_short_term(session, "user", f"{channel} {nickname}: {text}", platform="qq")
+            self.store.add_short_term(session, "user", written_user, platform="qq")
         except Exception:
             pass
         who = f"私聊 {nickname}" if msg_type == "private" else f"群 {group_id} {nickname}"
@@ -1115,6 +1116,10 @@ class QQBot:
 
             # 短期上下文（按隐私层级：主人全渠道、群只看本群、私聊只看本人）
             history = self.store.get_short_term(scope, limit=SHORT_TERM_LIMIT)
+            # 去掉刚写入 short_term 的「当前这条」：它下面会作为 final user turn 再给一次，
+            # 否则同一条消息在上下文里出现两遍，LLM 会误以为对方发了两遍
+            if history and history[-1]["role"] == "user" and history[-1]["content"] == written_user:
+                history = history[:-1]
 
             # 长期记忆（按相关性 + scope 软偏好召回，带身份标签）
             memories = self.store.retrieve(text, k=8, context_scope=scope)
