@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../api.dart';
 import '../theme.dart';
+import 'sticker.dart';
 
 class SettingsPage extends StatefulWidget {
   final ApiClient api;
@@ -386,6 +387,14 @@ class _SettingsPageState extends State<SettingsPage> {
                   onPressed: _evolveNow,
                   icon: const Icon(Icons.auto_awesome),
                   label: const Text('让它自省一次'),
+                ),
+                const SizedBox(height: 24),
+                OutlinedButton.icon(
+                  onPressed: () {
+                    Navigator.push(context, MaterialPageRoute(builder: (_) => StickerPage(api: widget.api)));
+                  },
+                  icon: const Icon(Icons.emoji_emotions_outlined),
+                  label: const Text('管理表情包'),
                 ),
                 const SizedBox(height: 32),
                 const Divider(),

@@ -180,6 +180,7 @@ class _WizardPageState extends State<WizardPage> {
       'life.py': 'assets/fish/life.py',
       'autonomy.py': 'assets/fish/autonomy.py',
       'heybox.py': 'assets/fish/heybox.py',
+      'weather.py': 'assets/fish/weather.py',
     };
     var failed = 0;
     for (final e in files.entries) {

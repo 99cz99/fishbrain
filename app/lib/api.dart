@@ -134,6 +134,45 @@ class ApiClient {
     return Uint8List.fromList(bytes);
   }
 
+  // ---- 表情包管理 ----
+  Future<List<Map<String, dynamic>>> stickers() async {
+    final j = await _request('GET', '/stickers') as Map<String, dynamic>;
+    return (j['stickers'] as List).map((e) => e as Map<String, dynamic>).toList();
+  }
+
+  Future<Uint8List> stickerImage(int id) async {
+    final uri = Uri.parse('$base/stickers/$id/image');
+    final req = await _http.openUrl('GET', uri);
+    final resp = await req.close();
+    if (resp.statusCode != 200) {
+      throw Exception('HTTP ${resp.statusCode}');
+    }
+    final bytes = <int>[];
+    await for (final chunk in resp) {
+      bytes.addAll(chunk);
+    }
+    return Uint8List.fromList(bytes);
+  }
+
+  Future<Map<String, dynamic>> addSticker(
+      {String? base64, String? url, String ext = 'gif', required String tag}) async {
+    final body = <String, dynamic>{'tag': tag, 'ext': ext};
+    if (base64 != null) body['base64'] = base64;
+    if (url != null) body['url'] = url;
+    return await _request('POST', '/stickers', body: body) as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> updateSticker(int id, {String? tag, bool? pinned}) async {
+    final body = <String, dynamic>{};
+    if (tag != null) body['tag'] = tag;
+    if (pinned != null) body['pinned'] = pinned;
+    return await _request('PUT', '/stickers/$id', body: body) as Map<String, dynamic>;
+  }
+
+  Future<void> deleteSticker(int id) async {
+    await _request('DELETE', '/stickers/$id');
+  }
+
   Future<List<Approval>> pendingApprovals() async {
     final j = await _request('GET', '/approval/pending') as Map<String, dynamic>;
     return (j['pending'] as List)

@@ -1,5 +1,7 @@
 # server.py — Fishbrain 鱼脑的本地 API（HTTP + 轮询），给监管 app 用
 # 阶段 0：骨架。暴露 状态/日志/聊天记录/记忆/设定/审批/命令，全部落到 memory.Store。
+import base64
+import hashlib
 import json
 import os
 import re
@@ -8,6 +10,7 @@ import sys
 import threading
 import time
 import tomllib
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
@@ -15,6 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from memory import Store
 from brain import Brain
 from autonomy import Autonomy
+from qq_bot import STICKER_DIR
 
 # NapCat 二维码文件路径（proot-Debian 容器内，映射到 Termux 文件系统）
 DEFAULT_QRCODE_PATH = "/data/data/com.termux/files/usr/var/lib/proot-distro/containers/debian/rootfs/opt/QQ/resources/app/app_launcher/napcat/cache/qrcode.png"
@@ -37,6 +41,8 @@ QQ_STOP_CMD = ("pkill -TERM -f '[q]q --no-sandbox'; sleep 15; "
                "pkill -9 -f '[q]q --no-sandbox'; pkill -9 -f '[X]vfb'; pkill -9 -f '[x]vfb-run'")
 # 两次自动拉起 QQ 的最小间隔（秒）：防频繁重登被 QQ 风控
 QQ_RESTART_COOLDOWN = 120
+# 鱼脑刚启动的宽限期（秒）：此窗口内 qq_keep_alive 不拉起/判断，给 QQ 的 WS 重连留时间
+QQ_KEEPALIVE_GRACE_SECONDS = 120
 # QQ 扫码二维码真实有效期（秒）：QQ 的码约 1~2 分钟就失效，别按 15 分钟判断
 QQ_QR_VALID_SECONDS = 90
 # QQ 登录态诊断：qq.log 宿主路径（鱼脑以 Termux UID 可直接读，与 qrcode 同机制）
@@ -88,6 +94,30 @@ def _qq_qr_fresh(path):
         return os.path.exists(path) and (time.time() - os.path.getmtime(path)) < QQ_QR_VALID_SECONDS
     except Exception:
         return False
+
+
+def _sniff_ext(data):
+    """从字节魔数嗅探图片扩展名。"""
+    if data[:3] == b"GIF":
+        return "gif"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    return "gif"
+
+
+def _download_url(url):
+    """下载图片 URL，返回 (bytes, ext)；失败/超限返回 (b'', '')。"""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read()
+            if len(data) > 5 * 1024 * 1024:
+                return b"", ""
+            return data, _sniff_ext(data)
+    except Exception:
+        return b"", ""
 
 
 def _parse_qq_log_state():
@@ -355,6 +385,8 @@ class Fish:
         由 autonomy 周期性调用；用户显式停 QQ 后不再自动拉起。"""
         if not self._qq_auto:
             return
+        if time.time() - self.started < QQ_KEEPALIVE_GRACE_SECONDS:
+            return  # 鱼脑刚启动，先别拉起/判断，给 QQ 的 WS 重连留时间
         now = time.time()
         # 记录上次真实在线时刻（掉线宽限期的基准）；持续稳定在线才清零熔断计数
         if self._qq_really_online():
@@ -500,6 +532,58 @@ class Fish:
         self.log("info", "status", "已叫醒")
         return {"ok": True}
 
+    # ---- 表情包管理 ----
+    def list_stickers(self):
+        return {"stickers": [
+            {"id": s["id"], "tag": s["tag"], "pinned": bool(s["pinned"]), "created_at": s["created_at"]}
+            for s in self.store.get_stickers(limit=500)
+        ]}
+
+    def add_sticker_http(self, body):
+        tag = str(body.get("tag", "") or "").strip()[:20]
+        b64 = str(body.get("base64", "") or "").strip()
+        url = str(body.get("url", "") or "").strip()
+        ext = str(body.get("ext", "") or "").strip().lower()
+        data = b""
+        if b64:
+            try:
+                data = base64.b64decode(b64)
+            except Exception:
+                return {"ok": False, "error": "base64 解码失败"}
+            if not ext:
+                ext = _sniff_ext(data)
+        elif url:
+            data, ext = _download_url(url)
+        else:
+            return {"ok": False, "error": "需要 base64 或 url"}
+        if not data:
+            return {"ok": False, "error": "下载失败或空数据"}
+        if len(data) > 5 * 1024 * 1024:
+            return {"ok": False, "error": "超过 5MB"}
+        if ext not in ("gif", "png", "jpg", "jpeg", "webp"):
+            ext = _sniff_ext(data)
+        sha = hashlib.sha256(data).hexdigest()
+        if self.store.has_sticker(sha):
+            return {"ok": False, "error": "已存在（重复）"}
+        os.makedirs(STICKER_DIR, exist_ok=True)
+        path = os.path.join(STICKER_DIR, sha + "." + ext)
+        with open(path, "wb") as f:
+            f.write(data)
+        sid = self.store.add_sticker(tag, path, sha)
+        return {"ok": True, "id": sid}
+
+    def update_sticker_http(self, sid, body):
+        tag = body.get("tag")
+        if tag is not None:
+            tag = str(tag).strip()[:20]
+        pinned = body.get("pinned")
+        if pinned is not None:
+            pinned = bool(pinned)
+        return {"ok": self.store.update_sticker(sid, tag=tag, pinned=pinned)}
+
+    def delete_sticker_http(self, sid):
+        return {"ok": self.store.delete_sticker(sid)}
+
 
 class Deployer:
     """跑部署脚本（setup-qq.sh），解析进度标记，把状态写进 SQLite。"""
@@ -642,6 +726,29 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, f.deployer.status())
         if path == "/life/state":
             return self._send(200, f.life_state())
+        if path == "/stickers":
+            return self._send(200, f.list_stickers())
+        if path.startswith("/stickers/") and path.endswith("/image"):
+            try:
+                sid = int(path.split("/")[2])
+            except (IndexError, ValueError):
+                return self._send(400, {"error": "bad id"})
+            s = f.store.get_sticker(sid)
+            if not s:
+                return self._send(404, {"error": "not found"})
+            try:
+                with open(s["path"], "rb") as fp:
+                    img = fp.read()
+                ext = os.path.splitext(s["path"])[1].lstrip(".").lower()
+                ctype = {"gif": "image/gif", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}.get(ext, "image/gif")
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(img)))
+                self.end_headers()
+                self.wfile.write(img)
+                return
+            except Exception:
+                return self._send(404, {"error": "read failed"})
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):
@@ -690,6 +797,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True, "status": status})
             return self._send(404, {"error": "not found"})
 
+        if path == "/stickers":
+            return self._send(200, f.add_sticker_http(body))
+
         return self._send(404, {"error": "not found"})
 
     def do_PUT(self):
@@ -711,6 +821,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, merged)
         if path == "/heybox":
             return self._send(200, f.set_heybox_token(body.get("token", "")))
+        if path.startswith("/stickers/"):
+            try:
+                sid = int(path.split("/")[-1])
+            except ValueError:
+                return self._send(400, {"error": "bad id"})
+            return self._send(200, f.update_sticker_http(sid, body))
         return self._send(404, {"error": "not found"})
 
     def do_DELETE(self):
@@ -723,6 +839,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "bad id"})
             f.store.delete_memory(mid)
             return self._send(200, {"ok": True})
+        if path.startswith("/stickers/"):
+            try:
+                sid = int(path.split("/")[-1])
+            except ValueError:
+                return self._send(400, {"error": "bad id"})
+            return self._send(200, f.delete_sticker_http(sid))
         return self._send(404, {"error": "not found"})
 
     def log_message(self, *args):

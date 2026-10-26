@@ -2,7 +2,9 @@
 # 依赖：Termux 里 pip install websocket-client
 # 支持：私聊/群聊文字回复、收发图片/表情/引用、常用 API、notice/request/meta 事件。
 import base64
+import hashlib
 import json
+import os
 import queue
 import re
 import threading
@@ -59,11 +61,18 @@ FACE_IDS = {
     "胜利": 79, "抱拳": 118, "泪奔": 173, "斜眼笑": 178, "笑哭": 182,
 }
 
+# 表情包受控情绪词（vision prompt 与校验同源，别两处手改）
+STICKER_EMOTIONS = ("开心", "生气", "惊讶", "可爱", "无语", "委屈", "得意", "感动", "搞笑", "害怕", "疑惑", "无奈")
+
+# 表情包本地图库目录（相对本脚本，启动时兜底创建）
+STICKER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stickers")
+os.makedirs(STICKER_DIR, exist_ok=True)
+
 
 # ---- 群聊回复策略：私聊/@我 必回、@别人 不回、其它交给 LLM 判断（不再用关键词漏斗）----
 
 
-def build_system_prompt(settings, weather=None, mood=None):
+def build_system_prompt(settings, weather=None, mood=None, stickers=None):
     name = settings.get("name", "")
     persona = settings.get("persona", "")
     chat_scope = settings.get("chat_scope", "all")
@@ -99,6 +108,8 @@ def build_system_prompt(settings, weather=None, mood=None):
         parts.append(f"现在的天气：{weather}。")
     parts.append(f"你通过 {plats} 跟人互动。说话像真人、自然、不端着，{scope_hint}；用简体中文，别堆套话。")
     parts.append(f"想发 QQ 表情时在句子里写 [表情:名字]（如「[表情:呲牙]」），可用：{'、'.join(FACE_IDS.keys())}。偶尔用、别每条都发。")
+    if stickers:
+        parts.append(f"想发表情包时写 [表情包:描述]，你收藏过的有：{'、'.join(stickers)}。")
     parts.append("你有自己的想法、喜好和立场，不是一问一答的客服；对事情表达真实看法，可以延伸话题、吐槽、甚至不认同对方。")
     return "\n".join(parts)
 
@@ -225,20 +236,44 @@ class QQBot:
         text = text or ""
         return [text[i:i + MAX_MSG_LEN] for i in range(0, len(text), MAX_MSG_LEN)] if text else []
 
+    def _collect_sticker(self, image_bytes, mime, tag):
+        """收藏表情包：SHA256 去重，写本地文件，受控情绪词当标签。"""
+        sha = hashlib.sha256(image_bytes).hexdigest()
+        if self.store.has_sticker(sha):
+            return
+        ext = ".gif" if "gif" in (mime or "") else ".png"
+        path = os.path.join(STICKER_DIR, sha + ext)
+        with open(path, "wb") as f:
+            f.write(image_bytes)
+        self.store.add_sticker(tag or "", path, sha)
+
     def _to_segments(self, text):
-        """把含 [表情:名字] 的文本解析成 text/face 段列表；未知名字原样当文本。"""
+        """把含 [表情:名字]/[表情包:描述] 的文本解析成 text/face/image 段列表。"""
         text = text or ""
         segs = []
         pos = 0
-        for m in re.finditer(r"\[表情:([^\]]+)\]", text):
+        for m in re.finditer(r"\[(表情|表情包):([^\]]+)\]", text):
             if m.start() > pos:
                 segs.append(cq_text(text[pos:m.start()]))
-            name = m.group(1).strip()
-            fid = FACE_IDS.get(name)
-            if fid is not None:
-                segs.append(cq_face(fid))
-            else:
-                segs.append(cq_text(m.group(0)))
+            kind = m.group(1)
+            name = m.group(2).strip()
+            if kind == "表情":
+                fid = FACE_IDS.get(name)
+                if fid is not None:
+                    segs.append(cq_face(fid))
+                else:
+                    segs.append(cq_text(m.group(0)))
+            else:  # 表情包
+                path = self.store.get_sticker_by_tag(name)
+                if path:
+                    try:
+                        with open(path, "rb") as f:
+                            b64 = base64.b64encode(f.read()).decode("ascii")
+                        segs.append(cq_image("base64://" + b64))
+                    except Exception:
+                        segs.append(cq_text(m.group(0)))
+                else:
+                    segs.append(cq_text(m.group(0)))
             pos = m.end()
         if pos < len(text):
             segs.append(cq_text(text[pos:]))
@@ -1047,9 +1082,15 @@ class QQBot:
         # 图片：下载 → vision 看图（失败 OCR 兜底）
         image_bytes, image_mime = self._get_image_bytes(message)
         if image_bytes:
-            image_desc = self._vision_or_ocr(image_bytes, image_mime, message) or ""
+            image_desc, sticker_emotion = self._vision_or_ocr(image_bytes, image_mime, message)
             if image_desc:
                 text = f"{text}\n（图片：{image_desc}）" if text else image_desc
+            # 表情包收集：只收 GIF，SHA256 去重，受控情绪词当标签
+            if image_mime and "gif" in image_mime:
+                try:
+                    self._collect_sticker(image_bytes, image_mime, sticker_emotion or "")
+                except Exception:
+                    pass
 
         # 链接：抓取 URL 内容（最多 2 个）
         for u in self._extract_urls(message, text)[:2]:
@@ -1081,7 +1122,8 @@ class QQBot:
 
             weather_text = weather.get_weather(settings.get("city", ""))
             mood_text = self.store.get_life_state().get("mood", "")
-            sys_content = build_system_prompt(settings, weather=weather_text, mood=mood_text)
+            sticker_names = [s["tag"] for s in self.store.get_stickers(limit=30) if s.get("tag")]
+            sys_content = build_system_prompt(settings, weather=weather_text, mood=mood_text, stickers=sticker_names)
             if not self._self_avatar_desc and self.self_id:
                 self._self_avatar_desc = self._get_avatar_desc(self.self_id)
             if self._self_avatar_desc:
@@ -1268,11 +1310,22 @@ class QQBot:
         return (None, None)
 
     def _vision_or_ocr(self, image_bytes, mime, message):
-        """看图：先 vision 模型，失败再 NapCat OCR 兜底。"""
+        """看图：先 vision 模型（返回描述+情绪标签），失败再 NapCat OCR 兜底。返回 (desc, emotion)。"""
         try:
-            desc = self.brain.vision(image_bytes, "描述这张图，用第一人称、像真人一样简短地回应", mime)
-            if desc:
-                return desc
+            raw = self.brain.vision(
+                image_bytes,
+                f"描述这张图，用第一人称、像真人一样简短地回应；然后从这些情绪词里选一个最贴切的：{'/'.join(STICKER_EMOTIONS)}，格式「情绪:开心」",
+                mime,
+            ) or ""
+            emotion = ""
+            m = re.search(r"情绪[:：]\s*([^\s，。；]+)", raw)
+            if m:
+                cand = m.group(1).strip()
+                if cand in STICKER_EMOTIONS:
+                    emotion = cand
+                raw = raw[:m.start()].strip()
+            if raw:
+                return raw, emotion
         except Exception as e:
             self.store.add_log("error", "error", f"vision 看图失败: {e}")
 
@@ -1283,10 +1336,10 @@ class QQBot:
                 texts = ((r or {}).get("data", {}) or {}).get("texts", []) or []
                 ocr = "\n".join(t.get("text", "") for t in texts if isinstance(t, dict)).strip()
                 if ocr:
-                    return f"（图片文字：{ocr}）"
+                    return f"（图片文字：{ocr}）", ""
             except Exception as e:
                 self.store.add_log("error", "error", f"OCR 兜底失败: {e}")
-        return ""
+        return "", ""
 
     # ---- 链接抓取 ----
     def _extract_urls(self, message, text):
