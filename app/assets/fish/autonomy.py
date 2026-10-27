@@ -348,12 +348,12 @@ class Autonomy:
             self_mems = self.store.get_memories(subject="self", limit=20)
             mem_text = "\n".join(f"- {m['content']}" for m in self_mems) or "（还没有自我认知）"
             prompt = (
-                "下面是你对自己的认识（当前画像）+ 你的底层人设 + 最近的自我洞察。\n"
-                f"当前画像：{json.dumps(sp, ensure_ascii=False)}\n"
-                f"底层人设：{persona or '（无）'}\n"
+                "下面是你最近的自我洞察。请从中**重新提炼**关于你自己的、值得沉淀的特质。\n"
+                f"已有画像（仅用于去重，别被它锚定）：{json.dumps(sp, ensure_ascii=False)}\n"
+                f"底层人设（不得与之冲突）：{persona or '（无）'}\n"
                 f"最近的自我洞察：\n{mem_text}\n\n"
-                "请从中提炼出关于你自己的、值得沉淀的特质，只输出**新增**条目（不要重复已有的），"
-                "且不得与你的人设冲突。只输出 JSON 对象："
+                "要求：只输出在洞察中**反复出现、有明确证据**的特质，单次提及不算；"
+                "只输出**新增**条目（不要重复已有的），且不得与人设冲突。只输出 JSON 对象："
                 '{"values":[],"style":[],"likes":[],"boundaries":[]}（每维最多 2 条，没新的就空数组）。'
                 "不要输出 JSON 以外的文字。"
             )

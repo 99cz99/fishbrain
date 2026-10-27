@@ -166,10 +166,16 @@ def _similar(a, b, threshold=0.6):
 
 
 def _overlap(query, content):
-    q, c = _bigrams(query), _bigrams(content)
+    """召回相似度：单字(1-gram) + 双字(2-gram) Jaccard + 子串，中文友好。"""
+    q, c = _norm(query), _norm(content)
     if not q or not c:
         return 0.0
-    return len(q & c) / len(q)
+    q1, c1 = set(q), set(c)
+    uni = len(q1 & c1) / len(q1 | c1)
+    q2, c2 = _bigrams(q), _bigrams(c)
+    bi = len(q2 & c2) / len(q2 | c2) if (q2 or c2) else 0.0
+    sub = 1.0 if (q in c or c in q) else 0.0
+    return min(1.0, 0.4 * uni + 0.3 * bi + 0.3 * sub)
 
 
 class Store:
@@ -337,9 +343,10 @@ class Store:
             cols = ("id", "kind", "subject", "content", "platform", "created_at")
             return [dict(zip(cols, r)) for r in self._conn.execute(q, args)]
 
-    def retrieve(self, query, k=8, candidate_limit=50, context_scope=None):
+    def retrieve(self, query, k=8, candidate_limit=None, context_scope=None, speaker=None):
         """三维召回（recency+relevance+importance），按 context_scope 硬过滤隐私：
-        owner/None → 全量；group:{id} → 本群+global；private:{id} → 本人+global。"""
+        owner/None → 全量；group:{id} → 本群+global；private:{id} → 本人+global。
+        speaker 传入当前说话人昵称，命中同 subject 的记忆时加实体分（自我指代兜底）。"""
         with self._lock:
             now = time.time()
             cond = "absorbed = 0"
@@ -347,11 +354,12 @@ class Store:
             if context_scope and context_scope.startswith(("group:", "private:")):
                 cond += " AND scope IN (?, 'global', '')"
                 args.append(context_scope)
-            rows = self._conn.execute(
-                f"SELECT id, kind, subject, content, importance, last_access, created_at, scope "
-                f"FROM memories WHERE {cond} ORDER BY id DESC LIMIT ?",
-                (*args, candidate_limit),
-            ).fetchall()
+            q = (f"SELECT id, kind, subject, content, importance, last_access, created_at, scope "
+                 f"FROM memories WHERE {cond} ORDER BY id DESC")
+            if candidate_limit:
+                q += " LIMIT ?"
+                args.append(candidate_limit)
+            rows = self._conn.execute(q, args).fetchall()
             if not rows:
                 return []
             scored = []
@@ -363,6 +371,8 @@ class Store:
                 age = max(0.0, now - ts)
                 recency = 2 ** (-age / (7 * 24 * 3600))  # 7 天半衰
                 relevance = min(1.0, _overlap(query, content) + 0.3 * _overlap(query, subject))
+                if speaker and subject == speaker:
+                    relevance = min(1.0, relevance + 0.25)
                 imp = (int(importance or 5) or 5) / 10.0
                 score = 0.5 * recency + 3.0 * relevance + 2.0 * imp
                 scored.append((score, rid, kind, subject, content, scope))

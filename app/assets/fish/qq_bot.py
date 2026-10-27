@@ -1124,7 +1124,7 @@ class QQBot:
                 history = history[:-1]
 
             # 长期记忆（按相关性 + scope 软偏好召回，带身份标签）
-            memories = self.store.retrieve(text, k=8, context_scope=scope)
+            memories = self.store.retrieve(text, k=8, context_scope=scope, speaker=nickname)
             mem_text = "\n".join(f"- {m['subject']}: {m['content']}" for m in memories)
 
             weather_text = weather.get_weather(settings.get("city", ""))
@@ -1227,7 +1227,7 @@ class QQBot:
             pass
 
         # 长期记忆回写：对话足够实质时提炼
-        if self.consolidate and len(text) >= 8:
+        if self.consolidate and len(text) >= 4:
             try:
                 self.consolidate(nickname, f"对方说：{text}", platform="qq", scope=scope)
             except Exception:
