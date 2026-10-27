@@ -484,12 +484,13 @@ class Fish:
         reason = _parse_qq_log_state()
         uin = self._qq_self_heal_uin()
         if uin and reason in ("offline", "login_service_dropped", "nt_timeout"):
-            # 先确认账号真离线（别在「还登着 / 正在重连」时乱动）
-            if not self._webui_account_offline():
+            # 仅当 WebUI 明确显示「在线/重连中」才不动；真离线 或 WebUI 不可达 都尝试快登（后者回退 -q）
+            st = self._webui_check_login()
+            if st is not None and (st.get("loginPhase") == "reconnecting" or (st.get("isLogin") and not st.get("isOffline"))):
                 self._last_qq_stale_restart_ts = now
                 self.log("info", "qq", "QQ 账号未真离线（WS 掉或重连中），等待自动重连")
                 return
-            # 账号真离线：先免重启 WebUI 快登，失败回退 -q 重启
+            # 真离线（或 WebUI 不可达）：先免重启 WebUI 快登，失败回退 -q 重启
             self._last_qq_stale_restart_ts = now
             self._qq_auto_fail_count += 1
             if self._qq_auto_fail_count >= QQ_AUTO_MAX_FAIL:
@@ -650,19 +651,10 @@ class Fish:
         """SetQuickLogin({"uin":...}) → 原始响应 dict；不可达返回 None。"""
         return self._webui_call("/api/QQLogin/SetQuickLogin", {"uin": str(uin)})
 
-    def _webui_account_offline(self):
-        """账号是否需要重登：True=真离线（未登录或已离线），False=还登着/正在重连/WebUI 不可达。"""
-        st = self._webui_check_login()
-        if not st:
-            return False  # WebUI 不可达，别据此乱动
-        if st.get("loginPhase") == "reconnecting":
-            return False
-        if st.get("isLogin") and not st.get("isOffline"):
-            return False
-        return True
-
     def _do_quick_login_heal(self, uin):
         """后台自愈：先免重启 WebUI 快登；失败/不在列表则回退 -q 重启。"""
+        self._self_healing = True
+        self._self_healing_ts = time.time()
         try:
             lst = self._webui_quick_login_list()
             if lst and str(uin) not in lst:
@@ -671,8 +663,6 @@ class Fish:
                 return
             r = self._webui_set_quick_login(uin)
             if r and r.get("code") == 0:
-                self._self_healing = True
-                self._self_healing_ts = time.time()
                 self.log("info", "qq", f"QQ 掉线自愈：WebUI 快捷登录已发起（uin={uin}）")
                 return
             self.log("warn", "qq", f"WebUI 快捷登录失败: {(r or {}).get('message', '无响应')}，回退 -q 重启")
