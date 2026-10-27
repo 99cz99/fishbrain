@@ -17,6 +17,7 @@ DEFAULT_SETTINGS = {
     "name": "",                       # 名字（用户自设，默认空）
     "owner_qq": "",                   # 主人 QQ 号（主动冒泡发给谁）
     "qq_quick_login_uin": "",         # 鱼脑自己登录的 QQ 号（-q 快捷登录自愈用；_on_meta 登录时自动填）
+    "qq_device_guid": "",             # QQ 设备指纹 GUID 基准（掉线自愈/防「新设备」用，Part B 写入）
     "city": "",                       # 所在城市（中文名，天气感知用；空=不启用）
     "temperament": {                  # 气质：心情衰减的基线 + 平复快慢（稳定层，心情在其上波动）
         "valence": 0.0,               # 情绪基调 -1(偏阴郁) ~ 1(偏阳光)

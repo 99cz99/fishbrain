@@ -73,6 +73,18 @@ else
 fi
 done_ "debian"
 
+# 2.5 固定 /etc/machine-id（仅全新安装兜底：防 proot 里设备指纹漂移 → QQ 掉线/强制扫码）
+step "固定设备指纹"
+MACHINE_ID="$DEBIAN_ROOTFS/etc/machine-id"
+HAS_LOGIN=$(ls "$NAP_DIR"/config/onebot11_*.json 2>/dev/null || true)
+if [ ! -s "$MACHINE_ID" ] && [ -z "$HAS_LOGIN" ]; then
+  printf '%s\n' "0123456789abcdef0123456789abcdef" > "$MACHINE_ID"
+  echo "已写入固定 /etc/machine-id"
+else
+  echo "跳过（已有 machine-id 或已登录过 QQ）"
+fi
+done_ "machine-id"
+
 # 3. Debian 依赖（xvfb 虚拟屏 + Electron 运行库）
 step "装 Debian 依赖"
 proot-distro login debian -- bash -c "DEBIAN_FRONTEND=noninteractive apt-get update -y && apt-get install -y xvfb libgbm1 libasound2 unzip"

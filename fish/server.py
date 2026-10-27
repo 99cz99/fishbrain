@@ -24,6 +24,9 @@ from qq_bot import STICKER_DIR
 DEFAULT_QRCODE_PATH = "/data/data/com.termux/files/usr/var/lib/proot-distro/containers/debian/rootfs/opt/QQ/resources/app/app_launcher/napcat/cache/qrcode.png"
 # NapCat 配置目录（onebot11_<uin>.json 放这里，容器内 napcat/config/）
 NAPCAT_CONFIG_DIR = "/data/data/com.termux/files/usr/var/lib/proot-distro/containers/debian/rootfs/opt/QQ/resources/app/app_launcher/napcat/config"
+# NapCat WebUI（默认 127.0.0.1:6099）：快捷登录 + 设备指纹（webui.json 里存 token）
+NAPCAT_WEBUI_URL = "http://127.0.0.1:6099"
+NAPCAT_WEBUI_CONFIG = NAPCAT_CONFIG_DIR + "/webui.json"
 
 # Termux 环境：鱼脑经 run-as 启动时 PATH 是系统 PATH，proot-distro 得手动找
 TERMUX_BIN = "/data/data/com.termux/files/usr/bin"
@@ -188,6 +191,11 @@ class Fish:
         self._qq_auto_fail_count = 0        # 连续自动拉起但未稳定在线的次数
         self._qq_auto_circuit_until = 0.0   # 熔断截止时间戳（0=未熔断）
         self._qq_online_since = 0.0         # 当前在线起点（0=现在不在线）
+        self._webui_cred_val = None         # WebUI /api/auth/login 的 Credential 缓存
+        self._webui_cred_ts = 0.0
+        self._self_healing = False          # 自动快捷登录是否在途
+        self._self_healing_ts = 0.0
+        self._last_guid_check = 0.0         # 上次设备指纹捕获/比对时间戳（节流）
         self.deployer = Deployer(self.store)
         self.autonomy = Autonomy(self.store, self.brain,
                                  request_approval=self.request_approval,
@@ -367,6 +375,11 @@ class Fish:
         process_alive = _qq_process_alive()
         online = self._qq_really_online()
         qr_fresh = _qq_qr_fresh(qr_path)
+        # 快捷登录在途标志：上线即清，另设 300s 兜底超时（-q 重启+登录可能较久）
+        if self._self_healing and (online or (time.time() - self._self_healing_ts) > 300):
+            self._self_healing = False
+        raw_guid = self.store.get_setting_raw("qq_device_guid")
+        device_guid = str(raw_guid).strip() if raw_guid else ""
         return {
             "running": process_alive,      # 进程活着（含扫码阶段）
             "qr": qr_fresh,                # 有新鲜二维码 = 待扫码
@@ -379,6 +392,8 @@ class Fish:
             "quick_login_configured": bool(self._qq_self_heal_uin()),  # 是否配了 -q 快捷登录号（只布尔不吐号）
             "auto_circuit": bool(self._qq_auto_circuit_until and time.time() < self._qq_auto_circuit_until),
             "auto_fail_count": self._qq_auto_fail_count,
+            "self_healing": self._self_healing,   # 自动快捷登录是否在途
+            "device_guid": device_guid,           # 缓存的最新设备 GUID（Part B 写入）
         }
 
     def qq_api(self, action, params):
@@ -416,10 +431,14 @@ class Fish:
             elif now - self._qq_online_since >= QQ_AUTO_STABLE_SECONDS:
                 self._qq_auto_fail_count = 0
                 self._qq_auto_circuit_until = 0.0
+            # 每 600s 捕获/比对一次设备指纹（观测 + 纠偏，后台线程跑，不阻塞心跳）
+            if now - self._last_guid_check >= 600:
+                self._last_guid_check = now
+                threading.Thread(target=self._refresh_device_fingerprint, daemon=True).start()
         else:
             self._qq_online_since = 0.0
         qr_path = self.qq_cfg.get("qrcode_path", DEFAULT_QRCODE_PATH)
-        # 分支 1：进程完全没了 → 沿用原有「自动拉起」
+        # 分支 1：进程完全没了 → 自动拉起（有快捷登录号则 -q 免扫码，否则等人扫码）
         if not _qq_process_alive():
             if self._qq_auto_circuit_until:
                 if now < self._qq_auto_circuit_until:
@@ -429,7 +448,9 @@ class Fish:
                 self._qq_auto_circuit_until = 0.0
             if now - self._last_qq_auto_start < QQ_RESTART_COOLDOWN:
                 return
-            if _qq_qr_fresh(qr_path):
+            uin = self._qq_self_heal_uin()
+            if _qq_qr_fresh(qr_path) and not uin:
+                # 进程已死但留下新鲜二维码：只有没快捷登录号时才等人扫码（有号则 -q 免扫码重启）
                 if not self._qq_scan_logged:
                     self._qq_scan_logged = True
                     self.log("info", "qq", "QQ 需要重新扫码登录，暂不自动重登（去 app 扫码）")
@@ -444,8 +465,9 @@ class Fish:
                 self.log("warn", "qq",
                          f"QQ 连续 {self._qq_auto_fail_count} 次自动拉起仍无法稳定在线，熔断 {QQ_AUTO_CIRCUIT_SECONDS // 60} 分钟（可手动启动重置）")
                 return
-            self.log("info", "qq", "检测到 QQ 离线，自动拉起…")
-            return self.qq_start()
+            tag = "（-q 快速登录）" if uin else ""
+            self.log("info", "qq", f"检测到 QQ 离线，自动拉起…{tag}")
+            return self.qq_start(uin=uin)
         # 分支 2：进程活着但掉线（WS 不通 + 无新鲜码）。
         # 配了快捷登录号且属「软掉线」时，用 -q 快速登录自愈一次；否则只按节流记日志，交回 qq_bot 的 5s 重连。
         if not self._qq_stale(qr_path):
@@ -462,7 +484,12 @@ class Fish:
         reason = _parse_qq_log_state()
         uin = self._qq_self_heal_uin()
         if uin and reason in ("offline", "login_service_dropped", "nt_timeout"):
-            # 软掉线：账号/连接掉了但凭据大概率还在，-q 快速登录比重新扫码快
+            # 先确认账号真离线（别在「还登着 / 正在重连」时乱动）
+            if not self._webui_account_offline():
+                self._last_qq_stale_restart_ts = now
+                self.log("info", "qq", "QQ 账号未真离线（WS 掉或重连中），等待自动重连")
+                return
+            # 账号真离线：先免重启 WebUI 快登，失败回退 -q 重启
             self._last_qq_stale_restart_ts = now
             self._qq_auto_fail_count += 1
             if self._qq_auto_fail_count >= QQ_AUTO_MAX_FAIL:
@@ -470,8 +497,8 @@ class Fish:
                 self.log("warn", "qq",
                          f"QQ 连续 {self._qq_auto_fail_count} 次掉线自愈仍未稳定在线，熔断 {QQ_AUTO_CIRCUIT_SECONDS // 60} 分钟（可手动启动重置）")
                 return
-            self.log("info", "qq", f"QQ 掉线自愈：-q 快速登录拉起（reason={reason}）")
-            threading.Thread(target=self._restart_qq, args=(uin,), daemon=True).start()
+            self.log("info", "qq", f"QQ 掉线自愈：快捷登录（reason={reason}）")
+            threading.Thread(target=self._do_quick_login_heal, args=(uin,), daemon=True).start()
             return
         self._last_qq_stale_restart_ts = now
         self.log("warn", "qq", "QQ 进程活着但 WS 掉线（NapCat 疑似卡住），不重启以保留登录态，等待自动重连")
@@ -536,6 +563,164 @@ class Fish:
         self.qq_stop()
         time.sleep(2)
         self.qq_start(uin=uin)
+
+    # ---- NapCat WebUI（127.0.0.1:6099）：快捷登录 + 设备指纹 ----
+    def _webui_token(self):
+        """读 WebUI token：webui.json → qq.log 的 'WebUi Token:' → 兜底 'napcat'。"""
+        try:
+            if os.path.exists(NAPCAT_WEBUI_CONFIG):
+                with open(NAPCAT_WEBUI_CONFIG, "r", encoding="utf-8") as f:
+                    tok = (json.loads(f.read()) or {}).get("token", "")
+                    if tok:
+                        return tok
+        except Exception:
+            pass
+        # 全新安装时 webui.json 可能还没生成：扫 qq.log 启动打印
+        try:
+            with open(QQ_LOG_PATH, "r", encoding="utf-8", errors="ignore") as f:
+                f.seek(0, os.SEEK_END)
+                f.seek(max(0, f.tell() - 65536))
+                tail = f.read()
+            m = re.search(r"WebUi Token:\s*(\S+)", tail)
+            if m:
+                return m.group(1).strip()
+        except Exception:
+            pass
+        return "napcat"
+
+    def _webui_request(self, path, body=None, cred=None):
+        """低层：POST/GET 到 NapCat WebUI，返回解析后的 JSON dict（失败/超时返回 None）。"""
+        url = NAPCAT_WEBUI_URL + path
+        try:
+            req = urllib.request.Request(url, method="POST" if body is not None else "GET")
+            req.add_header("Content-Type", "application/json")
+            if cred:
+                req.add_header("Authorization", "Bearer " + cred)
+            data = json.dumps(body).encode("utf-8") if body is not None else None
+            with urllib.request.urlopen(req, data=data, timeout=6) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            return None
+
+    def _webui_cred(self):
+        """WebUI Bearer Credential（sha256(token+'.napcat') 登录），缓存 ~55 分钟。"""
+        now = time.time()
+        if self._webui_cred_val and (now - self._webui_cred_ts) < 3300:
+            return self._webui_cred_val
+        token = self._webui_token()
+        h = hashlib.sha256((token + ".napcat").encode("utf-8")).hexdigest()
+        r = self._webui_request("/api/auth/login", {"hash": h}, cred=None)
+        if not r or r.get("code") != 0:
+            self._webui_cred_val = None
+            return None
+        self._webui_cred_val = ((r.get("data") or {}).get("Credential")) or None
+        self._webui_cred_ts = now
+        return self._webui_cred_val
+
+    def _webui_call(self, path, body=None):
+        """带鉴权调用 WebUI；拿不到 Credential（WebUI 未起/不可达）返回 None。"""
+        cred = self._webui_cred()
+        if not cred:
+            return None
+        return self._webui_request(path, body, cred=cred)
+
+    def _webui_check_login(self):
+        """CheckLoginStatus → data dict（isLogin/isOffline/loginPhase/...）；失败/不可达返回 None。"""
+        r = self._webui_call("/api/QQLogin/CheckLoginStatus", {})
+        return (r or {}).get("data") if (r and r.get("code") == 0) else None
+
+    def _webui_quick_login_list(self):
+        """GetQuickLoginList → 可快捷登录的 uin 字符串列表；不可达返回 []。"""
+        r = self._webui_call("/api/QQLogin/GetQuickLoginList", {})
+        if r and r.get("code") == 0:
+            data = r.get("data")
+            if isinstance(data, list):
+                out = []
+                for x in data:
+                    if isinstance(x, dict):
+                        u = x.get("uin") or x.get("Uin")
+                        if u:
+                            out.append(str(u))
+                    else:
+                        out.append(str(x))
+                return out
+        return []
+
+    def _webui_set_quick_login(self, uin):
+        """SetQuickLogin({"uin":...}) → 原始响应 dict；不可达返回 None。"""
+        return self._webui_call("/api/QQLogin/SetQuickLogin", {"uin": str(uin)})
+
+    def _webui_account_offline(self):
+        """账号是否需要重登：True=真离线（未登录或已离线），False=还登着/正在重连/WebUI 不可达。"""
+        st = self._webui_check_login()
+        if not st:
+            return False  # WebUI 不可达，别据此乱动
+        if st.get("loginPhase") == "reconnecting":
+            return False
+        if st.get("isLogin") and not st.get("isOffline"):
+            return False
+        return True
+
+    def _do_quick_login_heal(self, uin):
+        """后台自愈：先免重启 WebUI 快登；失败/不在列表则回退 -q 重启。"""
+        try:
+            lst = self._webui_quick_login_list()
+            if lst and str(uin) not in lst:
+                self.log("info", "qq", f"WebUI 快捷登录列表不含 {uin}，回退 -q 重启")
+                self._restart_qq(uin)
+                return
+            r = self._webui_set_quick_login(uin)
+            if r and r.get("code") == 0:
+                self._self_healing = True
+                self._self_healing_ts = time.time()
+                self.log("info", "qq", f"QQ 掉线自愈：WebUI 快捷登录已发起（uin={uin}）")
+                return
+            self.log("warn", "qq", f"WebUI 快捷登录失败: {(r or {}).get('message', '无响应')}，回退 -q 重启")
+        except Exception as e:
+            self.log("warn", "qq", f"WebUI 快捷登录不可用: {e}，回退 -q 重启")
+        self._restart_qq(uin)
+
+    def qq_quick_login(self, uin=None):
+        """手动触发快捷登录（app「快速登录」按钮）。进程没活着→-q 拉起；活着且真离线→WebUI 快登（回退 -q）。"""
+        uin = uin or self._qq_self_heal_uin()
+        if not uin:
+            return {"ok": False, "error": "没有可快捷登录的 QQ 号（qq_quick_login_uin 未设置）"}
+        if not _qq_process_alive():
+            threading.Thread(target=self._restart_qq, args=(uin,), daemon=True).start()
+            return {"ok": True, "method": "restart", "uin": uin}
+        st = self._webui_check_login()
+        if st and st.get("isLogin") and not st.get("isOffline"):
+            return {"ok": False, "error": "QQ 账号当前在线（只是 WS 掉），无需快捷登录"}
+        threading.Thread(target=self._do_quick_login_heal, args=(uin,), daemon=True).start()
+        return {"ok": True, "method": "webui", "uin": uin}
+
+    def _webui_device_fingerprint(self):
+        """读当前设备 GUID（WebUI 不可达返回 None）。"""
+        r = self._webui_call("/api/QQLogin/GetDeviceGUID", {})
+        guid = None
+        if r and r.get("code") == 0:
+            d = r.get("data")
+            if isinstance(d, dict):
+                guid = d.get("guid") or d.get("GUID") or d.get("deviceGuid")
+            elif isinstance(d, str):
+                guid = d
+        return {"guid": str(guid).strip() if guid else None}
+
+    def _refresh_device_fingerprint(self):
+        """在线时捕获/比对设备 GUID：首次存基准，之后漂移→告警并尝试 SetDeviceGUID 纠偏（治「频繁掉线」根因）。"""
+        fp = self._webui_device_fingerprint()
+        guid = (fp or {}).get("guid")
+        if not guid:
+            return
+        old = self.store.get_setting_raw("qq_device_guid")
+        if old is None or str(old).strip() == "":
+            self.store.set_setting("qq_device_guid", guid)
+            self.log("info", "qq", f"已记录 QQ 设备指纹基准 GUID={guid}")
+        elif str(old).strip() != guid:
+            self.log("warn", "qq", f"设备指纹漂移：旧={old} 新={guid}，QQ 可能当新设备，尝试恢复")
+            r = self._webui_call("/api/QQLogin/SetDeviceGUID", {"guid": str(old).strip()})
+            if r and r.get("code") == 0:
+                self.log("info", "qq", "已尝试恢复设备 GUID（下次重启生效）")
 
     # ---- 自省（nudge 一次 reflect）----
     def growth_evolve(self):
@@ -803,6 +988,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, f.qq_stop())
         if path == "/qq/refresh_qr":
             return self._send(200, f.qq_refresh_qr())
+        if path == "/qq/quick_login":
+            return self._send(200, f.qq_quick_login(body.get("uin")))
         if path == "/qq/api":
             return self._send(200, f.qq_api(body.get("action", ""), body.get("params", {})))
         if path == "/qq/apply_onebot":

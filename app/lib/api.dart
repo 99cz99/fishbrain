@@ -89,6 +89,9 @@ class ApiClient {
   Future<Map<String, dynamic>> qqRefreshQr() async =>
       await _request('POST', '/qq/refresh_qr') as Map<String, dynamic>;
 
+  Future<Map<String, dynamic>> qqQuickLogin() async =>
+      await _request('POST', '/qq/quick_login') as Map<String, dynamic>;
+
   Future<Map<String, dynamic>> applyOnebot() async =>
       await _request('POST', '/qq/apply_onebot') as Map<String, dynamic>;
 

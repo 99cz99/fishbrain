@@ -24,6 +24,8 @@ class _LoginPageState extends State<LoginPage> {
   bool _configuring = false; // 已扫码登录、正在写 OneBot 配置并重启 QQ
   int _configuringAt = 0; // _configuring 置位时刻（ms），超时后强制复位
   Timer? _timer;
+  bool _quickLoginConfigured = false; // /qq/status 的 quick_login_configured
+  bool _selfHealing = false; // /qq/status 的 self_healing（快捷登录在途）
 
   @override
   void initState() {
@@ -52,6 +54,8 @@ class _LoginPageState extends State<LoginPage> {
       stale = q['stale'] == true;
       loginReason = (q['login_reason'] as String?) ?? 'unknown';
       _qrAge = (q['qr_age'] as num?)?.toInt() ?? -1;
+      _quickLoginConfigured = q['quick_login_configured'] == true;
+      _selfHealing = q['self_healing'] == true;
       final loginUin = (q['login_uin'] as String?) ?? '';
       // 扫码登录成功（NapCat 已生成 onebot11_<uin>.json）但 OneBot WS 还没连上 → 写配置 + 重启 QQ
       if (loginUin.isNotEmpty && !online && !_appliedOnebot) {
@@ -126,7 +130,11 @@ class _LoginPageState extends State<LoginPage> {
           _qr = null;
           _loggedIn = false;
           if (stale) {
-            _error = 'QQ 掉线（${_reasonLabel(loginReason)}），鱼脑会自动重连/出码，请稍候';
+            _error = _selfHealing
+                ? 'QQ 掉线，正在快捷登录自愈…'
+                : (_quickLoginConfigured
+                    ? 'QQ 掉线（${_reasonLabel(loginReason)}），正在尝试快捷登录自愈…'
+                    : 'QQ 掉线（${_reasonLabel(loginReason)}），鱼脑会自动重连/出码，请稍候');
           } else {
             _error = _qrAge >= 0
                 ? '二维码已过期（$_qrAge 秒前生成），点「重新出码」换个新的'
@@ -202,6 +210,33 @@ class _LoginPageState extends State<LoginPage> {
     _tick();
   }
 
+  Future<void> _quickLogin() async {
+    try {
+      final r = await widget.api.qqQuickLogin();
+      if (mounted) {
+        final err = (r['error'] as String?) ?? '';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(err.isNotEmpty ? err : '已发起快捷登录')),
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('快捷登录失败（鱼脑在线吗？）')),
+        );
+      }
+    }
+    _tick();
+  }
+
+  Widget _quickLoginButton() {
+    return OutlinedButton.icon(
+      onPressed: _quickLogin,
+      icon: const Icon(Icons.bolt),
+      label: const Text('快速登录（免扫码）'),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -235,6 +270,10 @@ class _LoginPageState extends State<LoginPage> {
                             icon: const Icon(Icons.restart_alt),
                             label: const Text('重新出码（重启 QQ）'),
                           ),
+                          if (_quickLoginConfigured) ...[
+                            const SizedBox(height: 8),
+                            _quickLoginButton(),
+                          ],
                         ],
                       )
                     : Padding(
@@ -251,6 +290,10 @@ class _LoginPageState extends State<LoginPage> {
                                 icon: const Icon(Icons.restart_alt),
                                 label: const Text('重新出码（重启 QQ）'),
                               ),
+                            ],
+                            if (_quickLoginConfigured) ...[
+                              const SizedBox(height: 8),
+                              _quickLoginButton(),
                             ],
                           ],
                         ),
