@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 
 import '../api.dart';
 import '../termux.dart';
+import '../theme.dart';
+import '../widgets.dart';
 import 'login.dart';
 import 'wizard.dart';
 
@@ -123,110 +125,18 @@ class _DeployPageState extends State<DeployPage> {
     if (mounted) setState(() => _busy = false);
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('部署')),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('组件状态', style: Theme.of(context).textTheme.titleMedium),
-                  const SizedBox(height: 12),
-                  _row('鱼脑 server.py', _fishUp, '在线', '未运行'),
-                  const SizedBox(height: 8),
-                  _row('QQ / NapCat', _qqRunning,
-                      _qqOnline
-                          ? '在线'
-                          : (_qqQr
-                              ? '待扫码'
-                              : (_qqStale ? '掉线（自愈中）' : '运行中')),
-                      '未运行'),
-                  const SizedBox(height: 8),
-                  _row('小黑盒', _heyboxEnabled, '已接入', '未接入'),
-                  if (_qqRunning && _qqQr && !_qqOnline)
-                    const Padding(
-                      padding: EdgeInsets.only(top: 8),
-                      child: Text('⚠ 有待扫码登录的二维码，点「扫码登录」',
-                          style: TextStyle(color: Colors.orange)),
-                    ),
-                  if (_qqRunning && _qqStale)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 8),
-                      child: Text('⚠ QQ 掉线（${_reasonLabel(_loginReason)}），鱼脑会自动重启重连',
-                          style: const TextStyle(color: Colors.orange)),
-                    ),
-                  if (_qqAutoCircuit)
-                    const Padding(
-                      padding: EdgeInsets.only(top: 8),
-                      child: Text('⚠ 自动拉起已熔断：QQ 连续拉起失败，鱼脑已暂停自动重连。点「启动 QQ」重置，并排查 proot 环境',
-                          style: TextStyle(color: Colors.red)),
-                    ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  if (!_fishUp)
-                    FilledButton.icon(
-                      onPressed: _busy ? null : _startFish,
-                      icon: const Icon(Icons.play_arrow),
-                      label: const Text('启动鱼脑'),
-                    ),
-                  if (!_fishUp) const SizedBox(height: 12),
-                  FilledButton.tonalIcon(
-                    onPressed: (_busy || !_fishUp) ? null : _startQq,
-                    icon: const Icon(Icons.chat),
-                    label: const Text('启动 QQ'),
-                  ),
-                  const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    onPressed: (_busy || !_qqRunning) ? null : _stopQq,
-                    icon: const Icon(Icons.stop),
-                    label: const Text('停止 QQ'),
-                  ),
-                  const SizedBox(height: 12),
-                  FilledButton.icon(
-                    onPressed: (_busy || !_qqRunning) ? null : _openLogin,
-                    icon: const Icon(Icons.qr_code_scanner),
-                    label: const Text('扫码登录 QQ'),
-                  ),
-                  const SizedBox(height: 12),
-                  OutlinedButton.icon(
-                    onPressed: _busy ? null : _openWizard,
-                    icon: const Icon(Icons.auto_fix_high),
-                    label: const Text('部署向导（全新部署）'),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
+  String _qqStatusLabel() {
+    if (!_qqRunning) return '未运行';
+    if (_qqOnline) return '在线';
+    if (_qqQr) return '待扫码';
+    if (_qqStale) return '掉线（自愈中）';
+    return '运行中';
   }
 
-  Widget _row(String label, bool ok, String yes, String no) {
-    return Row(
-      children: [
-        Icon(ok ? Icons.check_circle : Icons.cancel,
-            color: ok ? Colors.green : Colors.grey, size: 18),
-        const SizedBox(width: 8),
-        Expanded(child: Text(label)),
-        Text(ok ? yes : no, style: TextStyle(color: ok ? Colors.green : Colors.grey)),
-      ],
-    );
+  Color _qqStatusColor() {
+    if (_qqOnline) return AppColors.success;
+    if (_qqQr || _qqStale) return AppColors.warning;
+    return AppColors.textSecondaryLight;
   }
 
   String _reasonLabel(String reason) {
@@ -249,15 +159,144 @@ class _DeployPageState extends State<DeployPage> {
     }
   }
 
-  void _openLogin() {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => LoginPage(api: widget.api)),
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Scaffold(
+      appBar: AppBar(title: const Text('部署')),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
+        children: [
+          SectionHeader('组件状态'),
+          SectionCard(
+            children: [
+              _statusRow(
+                '鱼脑 server.py',
+                color: _fishUp
+                    ? AppColors.success
+                    : AppColors.textSecondaryLight,
+                value: _fishUp ? '在线' : '未运行',
+              ),
+              const Divider(height: 20),
+              _statusRow(
+                'QQ / NapCat',
+                color: _qqStatusColor(),
+                value: _qqStatusLabel(),
+              ),
+              const Divider(height: 20),
+              _statusRow(
+                '小黑盒',
+                color: _heyboxEnabled
+                    ? AppColors.success
+                    : AppColors.textSecondaryLight,
+                value: _heyboxEnabled ? '已接入' : '未接入',
+              ),
+              if (_qqRunning && _qqQr && !_qqOnline)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: _hint('有待扫码登录的二维码，点「扫码登录」', color: AppColors.warning),
+                ),
+              if (_qqRunning && _qqStale)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: _hint(
+                    'QQ 掉线（${_reasonLabel(_loginReason)}），鱼脑会自动重启重连',
+                    color: AppColors.warning,
+                  ),
+                ),
+              if (_qqAutoCircuit)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: _hint(
+                    '自动拉起已熔断：QQ 连续拉起失败，鱼脑已暂停自动重连。点「启动 QQ」重置，并排查 proot 环境',
+                    color: AppColors.danger,
+                  ),
+                ),
+            ],
+          ),
+
+          const SizedBox(height: 20),
+          SectionHeader('操作'),
+          SectionCard(
+            children: [
+              if (!_fishUp) ...[
+                FilledButton.icon(
+                  onPressed: _busy ? null : _startFish,
+                  icon: const Icon(Icons.play_arrow),
+                  label: const Text('启动鱼脑'),
+                ),
+                const SizedBox(height: 10),
+              ],
+              FilledButton.tonalIcon(
+                onPressed: (_busy || !_fishUp) ? null : _startQq,
+                icon: const Icon(Icons.chat),
+                label: const Text('启动 QQ'),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: (_busy || !_qqRunning) ? null : _stopQq,
+                icon: const Icon(Icons.stop),
+                label: const Text('停止 QQ'),
+              ),
+              const SizedBox(height: 10),
+              FilledButton.icon(
+                onPressed: (_busy || !_qqRunning) ? null : _openLogin,
+                icon: const Icon(Icons.qr_code_scanner),
+                label: const Text('扫码登录 QQ'),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                onPressed: _busy ? null : _openWizard,
+                icon: const Icon(Icons.auto_fix_high),
+                label: const Text('部署向导（全新部署）'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            '「启动/停止」这里只控制 QQ，鱼脑的启停去「状态」页操作',
+            style: theme.textTheme.labelSmall,
+          ),
+        ],
+      ),
     );
   }
 
-  void _openWizard() {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => WizardPage(api: widget.api)),
+  Widget _statusRow(
+    String label, {
+    required Color color,
+    required String value,
+  }) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(label, style: Theme.of(context).textTheme.bodyMedium),
+        ),
+        StatusPill(color: color, label: value),
+      ],
     );
+  }
+
+  Widget _hint(String text, {required Color color}) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(Icons.info_outline, size: 16, color: color),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(text, style: TextStyle(color: color, fontSize: 13)),
+        ),
+      ],
+    );
+  }
+
+  void _openLogin() {
+    Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => LoginPage(api: widget.api)));
+  }
+
+  void _openWizard() {
+    Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => WizardPage(api: widget.api)));
   }
 }

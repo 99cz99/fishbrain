@@ -6,6 +6,8 @@ import 'package:flutter/services.dart';
 
 import '../api.dart';
 import '../termux.dart';
+import '../theme.dart';
+import '../widgets.dart';
 import 'login.dart';
 
 const String _home = '/data/data/com.termux/files/home';
@@ -83,51 +85,45 @@ class _WizardPageState extends State<WizardPage> {
 
   Widget _envCheckCard() {
     final env = _env;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    return SectionCard(
+      children: [
+        Row(
           children: [
-            Row(
-              children: [
-                const Icon(Icons.fact_check_outlined, size: 18),
-                const SizedBox(width: 6),
-                Text('环境检查', style: Theme.of(context).textTheme.titleMedium),
-                const Spacer(),
-                IconButton(
-                  onPressed: _checkEnv,
-                  icon: const Icon(Icons.refresh),
-                  tooltip: '重新检查',
-                ),
-              ],
+            const Icon(Icons.fact_check_outlined, size: 18),
+            const SizedBox(width: 6),
+            Text('环境检查', style: Theme.of(context).textTheme.titleMedium),
+            const Spacer(),
+            IconButton(
+              onPressed: _checkEnv,
+              icon: const Icon(Icons.refresh),
+              tooltip: '重新检查',
             ),
-            const SizedBox(height: 8),
-            _envRow(
-              'Termux 已安装',
-              env == null ? null : env['termuxInstalled'] == true,
-              '去 GitHub/F-Droid 装 Termux 并打开一次（别用 Play 商店版）',
-            ),
-            _envRow(
-              '「在 Termux 里运行命令」权限',
-              env == null ? null : env['runCommandGranted'] == true,
-              '点下面「授权限」，不行就去系统设置手动开',
-            ),
-            if (env != null && env['runCommandGranted'] != true) ...[
-              const SizedBox(height: 8),
-              FilledButton.tonalIcon(
-                onPressed: _grantPermission,
-                icon: const Icon(Icons.lock_open),
-                label: const Text('授权限'),
-              ),
-              TextButton(
-                onPressed: _termux.openAppSettings,
-                child: const Text('去系统设置手动授权'),
-              ),
-            ],
           ],
         ),
-      ),
+        const SizedBox(height: 8),
+        _envRow(
+          'Termux 已安装',
+          env == null ? null : env['termuxInstalled'] == true,
+          '去 GitHub/F-Droid 装 Termux 并打开一次（别用 Play 商店版）',
+        ),
+        _envRow(
+          '「在 Termux 里运行命令」权限',
+          env == null ? null : env['runCommandGranted'] == true,
+          '点下面「授权限」，不行就去系统设置手动开',
+        ),
+        if (env != null && env['runCommandGranted'] != true) ...[
+          const SizedBox(height: 8),
+          FilledButton.tonalIcon(
+            onPressed: _grantPermission,
+            icon: const Icon(Icons.lock_open),
+            label: const Text('授权限'),
+          ),
+          TextButton(
+            onPressed: _termux.openAppSettings,
+            child: const Text('去系统设置手动授权'),
+          ),
+        ],
+      ],
     );
   }
 
@@ -159,8 +155,10 @@ class _WizardPageState extends State<WizardPage> {
           if (ok == false)
             Padding(
               padding: const EdgeInsets.only(left: 26, top: 2),
-              child: Text(fixHint,
-                  style: const TextStyle(color: Colors.red, fontSize: 12)),
+              child: Text(
+                fixHint,
+                style: const TextStyle(color: Colors.red, fontSize: 12),
+              ),
             ),
         ],
       ),
@@ -191,7 +189,8 @@ class _WizardPageState extends State<WizardPage> {
         _logLn('写入 ${e.key} 失败');
       }
     }
-    const cfg = '[qq]\nws_url = "ws://127.0.0.1:8081"\nbackend = "napcat"\n[heybox]\ntoken = ""\n';
+    const cfg =
+        '[qq]\nws_url = "ws://127.0.0.1:8081"\nbackend = "napcat"\n[heybox]\ntoken = ""\n';
     if (!await _termux.writeFile('$_dfyDir/config.toml', cfg)) {
       failed++;
       _logLn('写入 config.toml 失败');
@@ -219,20 +218,21 @@ class _WizardPageState extends State<WizardPage> {
       if (mounted) setState(() => _busy = false);
       return;
     }
-    final combined =
-        [r.stdout, r.stderr].where((s) => s.trim().isNotEmpty).join('\n');
+    final combined = [
+      r.stdout,
+      r.stderr,
+    ].where((s) => s.trim().isNotEmpty).join('\n');
     if (combined.isNotEmpty) _logLn(_tail(combined.trim()));
     if (!r.ok) {
-      _logLn('装环境失败（exit ${r.exitCode}）${r.errmsg.isNotEmpty ? '：${r.errmsg}' : ''}');
+      _logLn(
+        '装环境失败（exit ${r.exitCode}）${r.errmsg.isNotEmpty ? '：${r.errmsg}' : ''}',
+      );
       if (mounted) setState(() => _busy = false);
       return;
     }
 
     _logLn('环境就绪，起鱼脑…');
-    await _termux.run(
-      'cd $_dfyDir && sh run-fish.sh',
-      workdir: _dfyDir,
-    );
+    await _termux.run('cd $_dfyDir && sh run-fish.sh', workdir: _dfyDir);
     await _waitForFish();
     if (mounted) setState(() => _busy = false);
   }
@@ -290,7 +290,12 @@ class _WizardPageState extends State<WizardPage> {
         });
       }
       // 显示最后几行日志
-      final tail = logs.take(6).map((l) => (l['message'] ?? '')).toList().reversed.join('\n');
+      final tail = logs
+          .take(6)
+          .map((l) => (l['message'] ?? ''))
+          .toList()
+          .reversed
+          .join('\n');
       if (mounted && tail.isNotEmpty) setState(() => _log = tail);
     } catch (_) {}
   }
@@ -300,9 +305,30 @@ class _WizardPageState extends State<WizardPage> {
     return Scaffold(
       appBar: AppBar(title: const Text('部署向导')),
       body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: _stepWidgets(),
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
+        children: [
+          _stepIndicator(),
+          const SizedBox(height: 16),
+          ..._stepWidgets(),
+        ],
       ),
+    );
+  }
+
+  Widget _stepIndicator() {
+    final theme = Theme.of(context);
+    const total = 5;
+    final value = (_step + 1) / total;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(2),
+          child: LinearProgressIndicator(value: value, minHeight: 4),
+        ),
+        const SizedBox(height: 8),
+        Text('第 ${_step + 1} 步，共 $total 步', style: theme.textTheme.labelSmall),
+      ],
     );
   }
 
@@ -310,22 +336,26 @@ class _WizardPageState extends State<WizardPage> {
     switch (_step) {
       case 0:
         return [
-          Text('第 1 步：装 Termux', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 12),
+          Text('装 Termux', style: Theme.of(context).textTheme.headlineSmall),
+          const SizedBox(height: 8),
           const Text('Fishbrain 跑在 Termux 里，需要你先装 Termux：'),
           const SizedBox(height: 8),
-          const Text('1. 去 GitHub 搜 "termux-app"（或 F-Droid）下载 APK 安装。⚠ 别用 Play 商店版（已停更，pkg 是坏的）。'),
+          const Text(
+            '1. 去 GitHub 搜 "termux-app"（或 F-Droid）下载 APK 安装。⚠ 别用 Play 商店版（已停更，pkg 是坏的）。',
+          ),
           const Text('2. 装完打开一次 Termux。'),
           const Text('3. 在 Termux 里粘贴运行这一行，允许 app 控制它：'),
           const SizedBox(height: 8),
           Container(
+            width: double.infinity,
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
               color: Theme.of(context).colorScheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(8),
+              borderRadius: BorderRadius.circular(10),
             ),
             child: const SelectableText(
               'echo "allow-external-apps = true" >> ~/.termux/termux.properties && termux-reload-settings',
+              style: TextStyle(fontFamily: 'monospace', fontSize: 13),
             ),
           ),
           const SizedBox(height: 16),
@@ -338,8 +368,8 @@ class _WizardPageState extends State<WizardPage> {
         ];
       case 1:
         return [
-          Text('第 2 步：一键装鱼脑', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 12),
+          Text('一键装鱼脑', style: Theme.of(context).textTheme.headlineSmall),
+          const SizedBox(height: 8),
           const Text('把鱼脑代码写进 Termux 并启动（需要联网装 Python）。'),
           const SizedBox(height: 16),
           FilledButton(
@@ -351,52 +381,64 @@ class _WizardPageState extends State<WizardPage> {
             const LinearProgressIndicator(),
           ],
           if (_log.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            Text(_log, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+            const SizedBox(height: 16),
+            SectionHeader('安装日志'),
+            _logBox(),
           ],
         ];
       case 2:
         return [
-          Text('第 3 步：起名 + 填 LLM key', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _name,
-            decoration: const InputDecoration(labelText: '名字（给你的赛博生命体起个名）', border: OutlineInputBorder()),
+          Text(
+            '起名 + 填 LLM key',
+            style: Theme.of(context).textTheme.headlineSmall,
           ),
-          const SizedBox(height: 12),
-          SegmentedButton<String>(
-            segments: const [
-              ButtonSegment(value: 'openai', label: Text('OpenAI 兼容')),
-              ButtonSegment(value: 'anthropic', label: Text('Claude')),
-              ButtonSegment(value: 'gemini', label: Text('Gemini')),
+          const SizedBox(height: 8),
+          const Text('给它起个名，并填上大模型服务的 key。'),
+          const SizedBox(height: 16),
+          SectionCard(
+            children: [
+              TextField(
+                controller: _name,
+                decoration: const InputDecoration(labelText: '名字（给你的赛博生命体起个名）'),
+              ),
+              const SizedBox(height: 12),
+              SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'openai', label: Text('OpenAI 兼容')),
+                  ButtonSegment(value: 'anthropic', label: Text('Claude')),
+                  ButtonSegment(value: 'gemini', label: Text('Gemini')),
+                ],
+                selected: {_provider},
+                expandedInsets: EdgeInsets.zero,
+                showSelectedIcon: false,
+                onSelectionChanged: (s) {
+                  setState(() {
+                    _provider = s.first;
+                    _base.text = switch (_provider) {
+                      'anthropic' => 'https://api.anthropic.com',
+                      'gemini' => 'https://generativelanguage.googleapis.com',
+                      _ => 'https://api.deepseek.com/v1',
+                    };
+                  });
+                },
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _key,
+                obscureText: true,
+                decoration: const InputDecoration(labelText: 'API Key'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _base,
+                decoration: const InputDecoration(labelText: 'Base URL'),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _model,
+                decoration: const InputDecoration(labelText: '模型'),
+              ),
             ],
-            selected: {_provider},
-            onSelectionChanged: (s) {
-              setState(() {
-                _provider = s.first;
-                _base.text = switch (_provider) {
-                  'anthropic' => 'https://api.anthropic.com',
-                  'gemini' => 'https://generativelanguage.googleapis.com',
-                  _ => 'https://api.deepseek.com/v1',
-                };
-              });
-            },
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _key,
-            obscureText: true,
-            decoration: const InputDecoration(labelText: 'DeepSeek API Key', border: OutlineInputBorder()),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _base,
-            decoration: const InputDecoration(labelText: 'Base URL', border: OutlineInputBorder()),
-          ),
-          const SizedBox(height: 12),
-          TextField(
-            controller: _model,
-            decoration: const InputDecoration(labelText: '模型', border: OutlineInputBorder()),
           ),
           const SizedBox(height: 16),
           FilledButton(
@@ -406,8 +448,8 @@ class _WizardPageState extends State<WizardPage> {
         ];
       case 3:
         return [
-          Text('第 4 步：装 QQ 环境', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 12),
+          Text('装 QQ 环境', style: Theme.of(context).textTheme.headlineSmall),
+          const SizedBox(height: 8),
           const Text('装 proot-Debian + linuxqq + NapCat（首次 10-20 分钟）。'),
           const SizedBox(height: 16),
           FilledButton(
@@ -419,7 +461,9 @@ class _WizardPageState extends State<WizardPage> {
             if (_progress >= 0)
               Row(
                 children: [
-                  Expanded(child: LinearProgressIndicator(value: _progress / 100)),
+                  Expanded(
+                    child: LinearProgressIndicator(value: _progress / 100),
+                  ),
                   const SizedBox(width: 8),
                   Text('$_progress%'),
                 ],
@@ -432,14 +476,15 @@ class _WizardPageState extends State<WizardPage> {
             Text('当前步骤：$_msg'),
           ],
           if (_log.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            Text(_log, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+            const SizedBox(height: 16),
+            SectionHeader('部署日志'),
+            _logBox(),
           ],
         ];
       default:
         return [
-          Text('第 5 步：扫码登录', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 12),
+          Text('扫码登录', style: Theme.of(context).textTheme.headlineSmall),
+          const SizedBox(height: 8),
           const Text('QQ 环境已就绪，去扫码登录就能开聊了。'),
           const SizedBox(height: 16),
           FilledButton.icon(
@@ -449,6 +494,27 @@ class _WizardPageState extends State<WizardPage> {
           ),
         ];
     }
+  }
+
+  Widget _logBox() {
+    final b = Theme.of(context).brightness;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        gradient: AppTheme.glassGradient(b),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.glassHighlight(b), width: 0.5),
+      ),
+      child: Text(
+        _log,
+        style: const TextStyle(
+          fontFamily: 'monospace',
+          fontSize: 12,
+          height: 1.5,
+        ),
+      ),
+    );
   }
 
   Future<void> _saveLlm() async {
@@ -474,8 +540,7 @@ class _WizardPageState extends State<WizardPage> {
   }
 
   void _openLogin() {
-    Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => LoginPage(api: widget.api)),
-    );
+    Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => LoginPage(api: widget.api)));
   }
 }

@@ -9,6 +9,7 @@ import 'pages/memory.dart';
 import 'pages/settings.dart';
 import 'pages/status.dart';
 import 'theme.dart';
+import 'widgets.dart';
 
 void main() => runApp(const DfyApp());
 
@@ -22,12 +23,9 @@ class DfyApp extends StatelessWidget {
       builder: (context, mode, _) {
         return MaterialApp(
           title: 'Fishbrain',
-          theme: ThemeData(colorSchemeSeed: Colors.teal, useMaterial3: true),
-          darkTheme: ThemeData(
-            colorSchemeSeed: Colors.teal,
-            brightness: Brightness.dark,
-            useMaterial3: true,
-          ),
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.light,
+          darkTheme: AppTheme.dark,
           themeMode: mode,
           home: const HomePage(),
         );
@@ -47,6 +45,15 @@ class _HomePageState extends State<HomePage> {
   final ApiClient _api = ApiClient();
   int _index = 0;
 
+  static const _tabs = <(IconData, String)>[
+    (Icons.monitor_heart_outlined, '状态'),
+    (Icons.chat_bubble_outline, '聊天'),
+    (Icons.fact_check_outlined, '审批'),
+    (Icons.psychology_outlined, '记忆'),
+    (Icons.tune, '设定'),
+    (Icons.rocket_launch_outlined, '部署'),
+  ];
+
   @override
   Widget build(BuildContext context) {
     final pages = [
@@ -58,17 +65,53 @@ class _HomePageState extends State<HomePage> {
       DeployPage(api: _api),
     ];
     return Scaffold(
+      extendBody: true,
       body: pages[_index],
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _index,
-        onDestinationSelected: (i) => setState(() => _index = i),
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.monitor_heart_outlined), label: '状态'),
-          NavigationDestination(icon: Icon(Icons.chat_bubble_outline), label: '聊天'),
-          NavigationDestination(icon: Icon(Icons.fact_check_outlined), label: '审批'),
-          NavigationDestination(icon: Icon(Icons.psychology_outlined), label: '记忆'),
-          NavigationDestination(icon: Icon(Icons.tune), label: '设定'),
-          NavigationDestination(icon: Icon(Icons.rocket_launch_outlined), label: '部署'),
+      bottomNavigationBar: Padding(
+        padding: EdgeInsets.fromLTRB(
+          16,
+          0,
+          16,
+          10 + MediaQuery.paddingOf(context).bottom,
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(26),
+          child: GlassBar(
+            child: SizedBox(
+              height: 44,
+              child: Row(
+                children: [
+                  for (var i = 0; i < _tabs.length; i++)
+                    Expanded(child: _tabItem(i)),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _tabItem(int i) {
+    final scheme = Theme.of(context).colorScheme;
+    final selected = i == _index;
+    final color = selected ? scheme.primary : scheme.onSurfaceVariant;
+    return InkWell(
+      onTap: () => setState(() => _index = i),
+      borderRadius: BorderRadius.circular(20),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(_tabs[i].$1, size: 22, color: color),
+          const SizedBox(height: 2),
+          Text(
+            _tabs[i].$2,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+              color: color,
+            ),
+          ),
         ],
       ),
     );

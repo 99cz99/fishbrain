@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 
 import '../api.dart';
 import '../theme.dart';
+import '../widgets.dart';
 import 'sticker.dart';
 
 class SettingsPage extends StatefulWidget {
@@ -30,8 +31,8 @@ class _SettingsPageState extends State<SettingsPage> {
   final _heyboxToken = TextEditingController();
   String _llmProvider = 'openai';
   String _chatScope = 'all';
-  String _temperamentValence = '0';   // '-0.3' | '0' | '0.3'
-  String _temperamentTau = '4';       // '6' | '4' | '2'
+  String _temperamentValence = '0'; // '-0.3' | '0' | '0.3'
+  String _temperamentTau = '4'; // '6' | '4' | '2'
   bool _midnight = true;
   bool _money = true;
   bool _publish = true;
@@ -144,11 +145,13 @@ class _SettingsPageState extends State<SettingsPage> {
     try {
       await widget.api.updateSettings(body);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已保存')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('已保存')));
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('保存失败')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('保存失败')));
       }
     }
   }
@@ -165,11 +168,13 @@ class _SettingsPageState extends State<SettingsPage> {
     try {
       await widget.api.updateLlm(body);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('LLM 配置已保存')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('LLM 配置已保存')));
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('LLM 保存失败')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('LLM 保存失败')));
       }
     }
   }
@@ -186,7 +191,8 @@ class _SettingsPageState extends State<SettingsPage> {
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('小黑盒保存失败')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('小黑盒保存失败')));
       }
     }
   }
@@ -196,13 +202,14 @@ class _SettingsPageState extends State<SettingsPage> {
       final r = await widget.api.heyboxSign();
       final fail = (r['_error'] != null) || (r['_http_error'] != null);
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(fail ? '签到失败：$r' : '签到已执行：$r')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(fail ? '签到失败：$r' : '签到已执行：$r')));
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('签到失败（小黑盒接入了吗？）')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('签到失败（小黑盒接入了吗？）')));
       }
     }
   }
@@ -211,11 +218,13 @@ class _SettingsPageState extends State<SettingsPage> {
     try {
       await widget.api.growthEvolve();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已让它自省，稍等几秒')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('已让它自省，稍等几秒')));
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('自省失败')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('自省失败')));
       }
     }
   }
@@ -225,11 +234,16 @@ class _SettingsPageState extends State<SettingsPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('清除赛博生命体人格？'),
-        content: const Text('会清空名字、设定、长期记忆和最近对话，回到出厂空白。LLM 配置和审批等不受影响。此操作不可撤销。'),
+        content: const Text(
+          '会清空名字、设定、长期记忆和最近对话，回到出厂空白。LLM 配置和审批等不受影响。此操作不可撤销。',
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            style: FilledButton.styleFrom(backgroundColor: AppColors.danger),
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('清除'),
           ),
@@ -241,11 +255,13 @@ class _SettingsPageState extends State<SettingsPage> {
       await widget.api.resetPersona();
       await _refresh();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('人格已清除')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('人格已清除')));
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('清除失败')));
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('清除失败')));
       }
     }
   }
@@ -257,249 +273,444 @@ class _SettingsPageState extends State<SettingsPage> {
       body: !_loaded
           ? const Center(child: CircularProgressIndicator())
           : ListView(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
               children: [
-                TextField(
-                  controller: _name,
-                  decoration: const InputDecoration(
-                      labelText: '名字', border: OutlineInputBorder()),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: _ownerQq,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                      labelText: '主人 QQ 号（主动冒泡发给谁）', border: OutlineInputBorder()),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: _city,
-                  decoration: const InputDecoration(
-                      labelText: '城市（天气感知，中文名如「北京」，留空=不启用）',
-                      border: OutlineInputBorder()),
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: _persona,
-                  maxLines: 4,
-                  decoration: const InputDecoration(
-                      labelText: '设定（性格、口头禅都写这里）', border: OutlineInputBorder()),
-                ),
-                const SizedBox(height: 24),
-                Text('自我画像（每行一条，会自动演化）', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _spValues,
-                  maxLines: 3,
-                  decoration: const InputDecoration(
-                      labelText: '价值观', border: OutlineInputBorder()),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _spStyle,
-                  maxLines: 2,
-                  decoration: const InputDecoration(
-                      labelText: '说话风格', border: OutlineInputBorder()),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _spLikes,
-                  maxLines: 3,
-                  decoration: const InputDecoration(
-                      labelText: '喜好', border: OutlineInputBorder()),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _spBoundaries,
-                  maxLines: 2,
-                  decoration: const InputDecoration(
-                      labelText: '边界', border: OutlineInputBorder()),
-                ),
-                const SizedBox(height: 16),
-                Text('主题', style: Theme.of(context).textTheme.bodySmall),
-                SegmentedButton<ThemeMode>(
-                  segments: const [
-                    ButtonSegment(value: ThemeMode.light, label: Text('浅色')),
-                    ButtonSegment(value: ThemeMode.dark, label: Text('深色')),
-                    ButtonSegment(value: ThemeMode.system, label: Text('跟随系统')),
-                  ],
-                  selected: {themeNotifier.value},
-                  onSelectionChanged: (s) => themeNotifier.value = s.first,
-                ),
-                const SizedBox(height: 16),
-                Text('聊天尺度', style: Theme.of(context).textTheme.bodySmall),
-                SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(value: 'all', label: Text('放开')),
-                    ButtonSegment(value: 'moderate', label: Text('正常')),
-                    ButtonSegment(value: 'clean', label: Text('干净')),
-                  ],
-                  selected: {_chatScope},
-                  onSelectionChanged: (s) => setState(() => _chatScope = s.first),
-                ),
-                const SizedBox(height: 16),
-                Text('气质（心情基线）', style: Theme.of(context).textTheme.bodySmall),
-                SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(value: '-0.3', label: Text('偏阴郁')),
-                    ButtonSegment(value: '0', label: Text('中性')),
-                    ButtonSegment(value: '0.3', label: Text('偏阳光')),
-                  ],
-                  selected: {_temperamentValence},
-                  onSelectionChanged: (s) => setState(() => _temperamentValence = s.first),
-                ),
-                const SizedBox(height: 12),
-                Text('平复快慢', style: Theme.of(context).textTheme.bodySmall),
-                SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(value: '6', label: Text('慢')),
-                    ButtonSegment(value: '4', label: Text('中等')),
-                    ButtonSegment(value: '2', label: Text('快')),
-                  ],
-                  selected: {_temperamentTau},
-                  onSelectionChanged: (s) => setState(() => _temperamentTau = s.first),
-                ),
-                SwitchListTile(
-                  title: const Text('半夜也能主动找我'),
-                  value: _midnight,
-                  onChanged: (v) => setState(() => _midnight = v),
-                ),
-                SwitchListTile(
-                  title: const Text('花钱前先问我'),
-                  value: _money,
-                  onChanged: (v) => setState(() => _money = v),
-                ),
-                SwitchListTile(
-                  title: const Text('对外发内容前先问我'),
-                  value: _publish,
-                  onChanged: (v) => setState(() => _publish = v),
-                ),
-                SwitchListTile(
-                  title: const Text('自成长模式'),
-                  subtitle: const Text('开启后它会自己进化设定；关掉则只能你手动让它自省'),
-                  value: _selfEvolve,
-                  onChanged: (v) => setState(() => _selfEvolve = v),
-                ),
-                const SizedBox(height: 24),
-                FilledButton(onPressed: _save, child: const Text('保存设定')),
-                const SizedBox(height: 24),
-                OutlinedButton.icon(
-                  onPressed: _evolveNow,
-                  icon: const Icon(Icons.auto_awesome),
-                  label: const Text('让它自省一次'),
-                ),
-                const SizedBox(height: 24),
-                OutlinedButton.icon(
-                  onPressed: () {
-                    Navigator.push(context, MaterialPageRoute(builder: (_) => StickerPage(api: widget.api)));
-                  },
-                  icon: const Icon(Icons.emoji_emotions_outlined),
-                  label: const Text('管理表情包'),
-                ),
-                const SizedBox(height: 32),
-                const Divider(),
-                Text('LLM 配置', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 12),
-                SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(value: 'openai', label: Text('OpenAI 兼容')),
-                    ButtonSegment(value: 'anthropic', label: Text('Claude')),
-                    ButtonSegment(value: 'gemini', label: Text('Gemini')),
-                  ],
-                  selected: {_llmProvider},
-                  onSelectionChanged: (s) {
-                    setState(() {
-                      _llmProvider = s.first;
-                      if (_llmBaseUrl.text.isEmpty) {
-                        _llmBaseUrl.text = switch (_llmProvider) {
-                          'anthropic' => 'https://api.anthropic.com',
-                          'gemini' => 'https://generativelanguage.googleapis.com',
-                          _ => 'https://api.deepseek.com/v1',
-                        };
-                      }
-                    });
-                  },
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _llmApiKey,
-                  obscureText: true,
-                  decoration: const InputDecoration(
-                      labelText: 'API Key', border: OutlineInputBorder()),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _llmBaseUrl,
-                  decoration: const InputDecoration(
-                      labelText: 'Base URL', border: OutlineInputBorder()),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _llmModel,
-                  decoration: const InputDecoration(
-                      labelText: '模型', border: OutlineInputBorder()),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _llmVisionModel,
-                  decoration: const InputDecoration(
-                      labelText: '视觉模型（留空 = 用上面的模型）', border: OutlineInputBorder()),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _llmVisionBaseUrl,
-                  decoration: const InputDecoration(
-                      labelText: '视觉模型 Base URL（留空 = 用上面的）', border: OutlineInputBorder()),
-                ),
-                const SizedBox(height: 12),
-                FilledButton.tonal(onPressed: _saveLlm, child: const Text('保存 LLM 配置')),
-                const SizedBox(height: 32),
-                const Divider(),
-                Text('小黑盒', style: Theme.of(context).textTheme.titleMedium),
-                const SizedBox(height: 8),
-                Text(_heyboxEnabled
-                    ? (_heyboxId.isEmpty
-                        ? '已接入（未解析出 heybox_id，token 可能不是有效 app pkey）'
-                        : '已接入（heybox_id: $_heyboxId）')
-                    : '未接入（未填 token）'),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _heyboxToken,
-                  obscureText: true,
-                  decoration: const InputDecoration(
-                      labelText: '小黑盒 token（手机 app 版 pkey，留空保存 = 停用）',
-                      border: OutlineInputBorder()),
-                ),
-                const SizedBox(height: 12),
-                Row(
+                _sectionHeader('通用'),
+                SectionCard(
+                  padding: EdgeInsets.zero,
                   children: [
-                    Expanded(
-                      child: FilledButton.tonal(
-                          onPressed: _saveHeyboxToken, child: const Text('保存小黑盒 token')),
+                    _navRow(
+                      '身份',
+                      '名字、QQ、城市、人设',
+                      Icons.person_outline,
+                      _openIdentity,
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _heyboxEnabled ? _signHeybox : null,
-                        icon: const Icon(Icons.event_available),
-                        label: const Text('签到'),
+                    _divider(),
+                    _navRow(
+                      '自我画像',
+                      '价值观、风格、喜好、边界',
+                      Icons.auto_awesome,
+                      _openProfile,
+                    ),
+                    _divider(),
+                    _navRow('行为', '聊天尺度、气质、权限开关', Icons.tune, _openBehavior),
+                  ],
+                ),
+
+                const SizedBox(height: 20),
+                _sectionHeader('外观'),
+                SectionCard(
+                  children: [
+                    _labeledSegmented(
+                      '主题',
+                      _segmented<ThemeMode>(
+                        value: themeNotifier.value,
+                        segments: const [
+                          ButtonSegment(
+                            value: ThemeMode.light,
+                            label: Text('浅色'),
+                          ),
+                          ButtonSegment(
+                            value: ThemeMode.dark,
+                            label: Text('深色'),
+                          ),
+                          ButtonSegment(
+                            value: ThemeMode.system,
+                            label: Text('跟随系统'),
+                          ),
+                        ],
+                        onChanged: (v) => themeNotifier.value = v,
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 32),
-                const Divider(),
-                OutlinedButton.icon(
-                  onPressed: _resetPersona,
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.red,
-                    side: const BorderSide(color: Colors.red),
-                  ),
-                  icon: const Icon(Icons.delete_forever),
-                  label: const Text('清除赛博生命体人格'),
+
+                const SizedBox(height: 20),
+                _sectionHeader('连接'),
+                SectionCard(
+                  padding: EdgeInsets.zero,
+                  children: [
+                    _navRow(
+                      'LLM 配置',
+                      '模型、API Key、Base URL',
+                      Icons.settings_suggest_outlined,
+                      _openLlm,
+                    ),
+                    _divider(),
+                    _navRow(
+                      '小黑盒',
+                      _heyboxEnabled ? '已接入' : '未接入',
+                      Icons.storefront_outlined,
+                      _openHeybox,
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 20),
+                _sectionHeader('成长'),
+                SectionCard(
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: _evolveNow,
+                      icon: const Icon(Icons.auto_awesome),
+                      label: const Text('让它自省一次'),
+                    ),
+                    const SizedBox(height: 10),
+                    OutlinedButton.icon(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => StickerPage(api: widget.api),
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.emoji_emotions_outlined),
+                      label: const Text('管理表情包'),
+                    ),
+                  ],
+                ),
+
+                const SizedBox(height: 20),
+                _sectionHeader('危险'),
+                SectionCard(
+                  children: [
+                    OutlinedButton.icon(
+                      onPressed: _resetPersona,
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.danger,
+                        side: const BorderSide(color: AppColors.danger),
+                      ),
+                      icon: const Icon(Icons.delete_forever),
+                      label: const Text('清除赛博生命体人格'),
+                    ),
+                  ],
                 ),
               ],
             ),
+    );
+  }
+
+  // ---- 子页导航 ----
+  void _openIdentity() => Navigator.push(
+    context,
+    MaterialPageRoute(builder: (_) => _identityPage()),
+  );
+  void _openProfile() => Navigator.push(
+    context,
+    MaterialPageRoute(builder: (_) => _profilePage()),
+  );
+  void _openBehavior() => Navigator.push(
+    context,
+    MaterialPageRoute(builder: (_) => _behaviorPage()),
+  );
+  void _openLlm() =>
+      Navigator.push(context, MaterialPageRoute(builder: (_) => _llmPage()));
+  void _openHeybox() =>
+      Navigator.push(context, MaterialPageRoute(builder: (_) => _heyboxPage()));
+
+  Widget _identityPage() {
+    return _subPage('身份', [
+      SectionCard(
+        children: [
+          _field(_name, '名字'),
+          const SizedBox(height: 12),
+          _field(
+            _ownerQq,
+            '主人 QQ 号（主动冒泡发给谁）',
+            keyboardType: TextInputType.number,
+          ),
+          const SizedBox(height: 12),
+          _field(_city, '城市（天气感知，中文名如「北京」，留空=不启用）'),
+          const SizedBox(height: 12),
+          _field(_persona, '设定（性格、口头禅都写这里）', maxLines: 10),
+        ],
+      ),
+      const SizedBox(height: 16),
+      FilledButton(onPressed: _save, child: const Text('保存')),
+    ]);
+  }
+
+  Widget _profilePage() {
+    return _subPage('自我画像', [
+      SectionCard(
+        children: [
+          _field(_spValues, '价值观', maxLines: 4),
+          const SizedBox(height: 12),
+          _field(_spStyle, '说话风格', maxLines: 3),
+          const SizedBox(height: 12),
+          _field(_spLikes, '喜好', maxLines: 4),
+          const SizedBox(height: 12),
+          _field(_spBoundaries, '边界', maxLines: 3),
+        ],
+      ),
+      const SizedBox(height: 16),
+      FilledButton(onPressed: _save, child: const Text('保存')),
+    ]);
+  }
+
+  Widget _behaviorPage() {
+    return _subPage('行为', [
+      SectionCard(
+        children: [
+          _labeledSegmented(
+            '聊天尺度',
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: 'all', label: Text('放开')),
+                ButtonSegment(value: 'moderate', label: Text('正常')),
+                ButtonSegment(value: 'clean', label: Text('干净')),
+              ],
+              selected: {_chatScope},
+              showSelectedIcon: false,
+              onSelectionChanged: (s) => setState(() => _chatScope = s.first),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _labeledSegmented(
+            '气质（心情基线）',
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: '-0.3', label: Text('偏阴郁')),
+                ButtonSegment(value: '0', label: Text('中性')),
+                ButtonSegment(value: '0.3', label: Text('偏阳光')),
+              ],
+              selected: {_temperamentValence},
+              showSelectedIcon: false,
+              onSelectionChanged: (s) =>
+                  setState(() => _temperamentValence = s.first),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _labeledSegmented(
+            '平复快慢',
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(value: '6', label: Text('慢')),
+                ButtonSegment(value: '4', label: Text('中等')),
+                ButtonSegment(value: '2', label: Text('快')),
+              ],
+              selected: {_temperamentTau},
+              showSelectedIcon: false,
+              onSelectionChanged: (s) =>
+                  setState(() => _temperamentTau = s.first),
+            ),
+          ),
+          const Divider(height: 24),
+          _switch('半夜也能主动找我', _midnight, (v) => setState(() => _midnight = v)),
+          _switch('花钱前先问我', _money, (v) => setState(() => _money = v)),
+          _switch('对外发内容前先问我', _publish, (v) => setState(() => _publish = v)),
+          _switch(
+            '自成长模式',
+            _selfEvolve,
+            (v) => setState(() => _selfEvolve = v),
+            subtitle: '开启后它会自己进化设定；关掉则只能你手动让它自省',
+          ),
+        ],
+      ),
+      const SizedBox(height: 16),
+      FilledButton(onPressed: _save, child: const Text('保存')),
+    ]);
+  }
+
+  Widget _llmPage() {
+    return _subPage('LLM 配置', [
+      SectionCard(
+        children: [
+          _segmented<String>(
+            value: _llmProvider,
+            segments: const [
+              ButtonSegment(value: 'openai', label: Text('OpenAI 兼容')),
+              ButtonSegment(value: 'anthropic', label: Text('Claude')),
+              ButtonSegment(value: 'gemini', label: Text('Gemini')),
+            ],
+            onChanged: (v) {
+              setState(() {
+                _llmProvider = v;
+                if (_llmBaseUrl.text.isEmpty) {
+                  _llmBaseUrl.text = switch (_llmProvider) {
+                    'anthropic' => 'https://api.anthropic.com',
+                    'gemini' => 'https://generativelanguage.googleapis.com',
+                    _ => 'https://api.deepseek.com/v1',
+                  };
+                }
+              });
+            },
+          ),
+          const SizedBox(height: 12),
+          _field(_llmApiKey, 'API Key', obscure: true),
+          const SizedBox(height: 12),
+          _field(_llmBaseUrl, 'Base URL'),
+          const SizedBox(height: 12),
+          _field(_llmModel, '模型'),
+          const SizedBox(height: 12),
+          _field(_llmVisionModel, '视觉模型（留空 = 用上面的模型）'),
+          const SizedBox(height: 12),
+          _field(_llmVisionBaseUrl, '视觉模型 Base URL（留空 = 用上面的）'),
+        ],
+      ),
+      const SizedBox(height: 16),
+      FilledButton.tonal(onPressed: _saveLlm, child: const Text('保存 LLM 配置')),
+    ]);
+  }
+
+  Widget _heyboxPage() {
+    return _subPage('小黑盒', [
+      SectionCard(
+        children: [
+          Text(
+            _heyboxEnabled
+                ? (_heyboxId.isEmpty
+                      ? '已接入（未解析出 heybox_id，token 可能不是有效 app pkey）'
+                      : '已接入（heybox_id: $_heyboxId）')
+                : '未接入（未填 token）',
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 12),
+          _field(
+            _heyboxToken,
+            '小黑盒 token（手机 app 版 pkey，留空保存 = 停用）',
+            obscure: true,
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.tonal(
+                  onPressed: _saveHeyboxToken,
+                  child: const Text('保存 token'),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _heyboxEnabled ? _signHeybox : null,
+                  icon: const Icon(Icons.event_available),
+                  label: const Text('签到'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    ]);
+  }
+
+  Widget _subPage(String title, List<Widget> children) {
+    return Scaffold(
+      appBar: AppBar(title: Text(title)),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+        children: children,
+      ),
+    );
+  }
+
+  Widget _navRow(
+    String title,
+    String subtitle,
+    IconData icon,
+    VoidCallback onTap,
+  ) {
+    final theme = Theme.of(context);
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          children: [
+            Icon(icon, size: 22, color: theme.colorScheme.primary),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: theme.textTheme.bodyMedium),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: theme.textTheme.bodySmall,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            Icon(
+              Icons.chevron_right,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _divider() => const Divider(height: 1, indent: 52);
+
+  Widget _sectionHeader(String text) => SectionHeader(text);
+
+  Widget _field(
+    TextEditingController c,
+    String label, {
+    bool obscure = false,
+    TextInputType? keyboardType,
+    int? maxLines,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: Theme.of(context).textTheme.labelMedium),
+        const SizedBox(height: 8),
+        TextField(
+          controller: c,
+          obscureText: obscure,
+          keyboardType: keyboardType,
+          maxLines: maxLines,
+        ),
+      ],
+    );
+  }
+
+  Widget _labeledSegmented(String label, Widget control) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: Theme.of(context).textTheme.labelMedium),
+        const SizedBox(height: 8),
+        control,
+      ],
+    );
+  }
+
+  Widget _segmented<T>({
+    required T value,
+    required List<ButtonSegment<T>> segments,
+    required void Function(T) onChanged,
+  }) {
+    return SegmentedButton<T>(
+      segments: segments,
+      selected: {value},
+      expandedInsets: EdgeInsets.zero,
+      showSelectedIcon: false,
+      onSelectionChanged: (s) => onChanged(s.first),
+    );
+  }
+
+  Widget _switch(
+    String title,
+    bool value,
+    ValueChanged<bool> onChanged, {
+    String? subtitle,
+  }) {
+    return SwitchListTile(
+      contentPadding: EdgeInsets.zero,
+      title: Text(title, style: Theme.of(context).textTheme.bodyMedium),
+      subtitle: subtitle == null
+          ? null
+          : Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
+      value: value,
+      onChanged: onChanged,
     );
   }
 }

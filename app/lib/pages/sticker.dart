@@ -6,9 +6,24 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../api.dart';
+import '../theme.dart';
+import '../widgets.dart';
 
 // 与 fish/qq_bot.py 的 STICKER_emotions 保持一致（受控情绪词）
-const _emotions = ['开心', '生气', '惊讶', '可爱', '无语', '委屈', '得意', '感动', '搞笑', '害怕', '疑惑', '无奈'];
+const _emotions = [
+  '开心',
+  '生气',
+  '惊讶',
+  '可爱',
+  '无语',
+  '委屈',
+  '得意',
+  '感动',
+  '搞笑',
+  '害怕',
+  '疑惑',
+  '无奈',
+];
 
 class StickerPage extends StatefulWidget {
   final ApiClient api;
@@ -89,9 +104,12 @@ class _StickerPageState extends State<StickerPage> {
       builder: (ctx) => AlertDialog(
         title: const Text('删除这个表情包？'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('取消')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            style: FilledButton.styleFrom(backgroundColor: AppColors.danger),
             onPressed: () => Navigator.pop(ctx, true),
             child: const Text('删除'),
           ),
@@ -121,20 +139,34 @@ class _StickerPageState extends State<StickerPage> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TextField(controller: ctrl, decoration: const InputDecoration(labelText: '输入标签')),
+            TextField(
+              controller: ctrl,
+              decoration: const InputDecoration(labelText: '输入标签'),
+            ),
             const SizedBox(height: 12),
             Wrap(
               spacing: 6,
               runSpacing: 6,
               children: _emotions
-                  .map((e) => ActionChip(label: Text(e), onPressed: () => ctrl.text = e))
+                  .map(
+                    (e) => ActionChip(
+                      label: Text(e),
+                      onPressed: () => ctrl.text = e,
+                    ),
+                  )
                   .toList(),
             ),
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, ctrl.text.trim()), child: const Text('确定')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: const Text('确定'),
+          ),
         ],
       ),
     );
@@ -149,10 +181,16 @@ class _StickerPageState extends State<StickerPage> {
         _toast('超过 5MB');
         return;
       }
-      final ext = picked.name.contains('.') ? picked.name.split('.').last.toLowerCase() : 'gif';
+      final ext = picked.name.contains('.')
+          ? picked.name.split('.').last.toLowerCase()
+          : 'gif';
       final tag = await _pickTag();
       if (tag == null) return;
-      final r = await widget.api.addSticker(base64: base64Encode(bytes), ext: ext, tag: tag);
+      final r = await widget.api.addSticker(
+        base64: base64Encode(bytes),
+        ext: ext,
+        tag: tag,
+      );
       _toast(r['ok'] == true ? '已添加' : '添加失败：${r['error'] ?? ''}');
       await _refresh();
     } catch (_) {
@@ -166,10 +204,19 @@ class _StickerPageState extends State<StickerPage> {
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('添加表情包 URL'),
-        content: TextField(controller: urlCtrl, decoration: const InputDecoration(labelText: '图片 URL')),
+        content: TextField(
+          controller: urlCtrl,
+          decoration: const InputDecoration(labelText: '图片 URL'),
+        ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(ctx, urlCtrl.text.trim()), child: const Text('下一步')),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, urlCtrl.text.trim()),
+            child: const Text('下一步'),
+          ),
         ],
       ),
     );
@@ -192,8 +239,9 @@ class _StickerPageState extends State<StickerPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            const SizedBox(height: 8),
             ListTile(
-              leading: const Icon(Icons.photo_library),
+              leading: const Icon(Icons.photo_library_outlined),
               title: const Text('从相册选择'),
               onTap: () {
                 Navigator.pop(ctx);
@@ -208,6 +256,7 @@ class _StickerPageState extends State<StickerPage> {
                 _addFromUrl();
               },
             ),
+            const SizedBox(height: 8),
           ],
         ),
       ),
@@ -221,43 +270,122 @@ class _StickerPageState extends State<StickerPage> {
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _stickers.isEmpty
-              ? const Center(child: Text('还没有表情包，点右下角添加'))
-              : ListView.builder(
-                  itemCount: _stickers.length,
-                  itemBuilder: (ctx, i) {
-                    final s = _stickers[i];
-                    final id = s['id'] as int;
-                    final img = _images[id];
-                    return ListTile(
-                      leading: img != null
-                          ? ClipRRect(
-                              borderRadius: BorderRadius.circular(6),
-                              child: Image.memory(img, width: 48, height: 48, fit: BoxFit.cover, gaplessPlayback: true),
-                            )
-                          : const SizedBox(width: 48, height: 48, child: Icon(Icons.image)),
-                      title: Text((s['tag'] as String?)?.isNotEmpty == true ? s['tag'] as String : '无标签'),
-                      subtitle: s['pinned'] == true ? const Text('已固定') : null,
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            icon: Icon(s['pinned'] == true ? Icons.push_pin : Icons.push_pin_outlined),
-                            color: s['pinned'] == true ? Colors.orange : null,
-                            onPressed: () => _togglePin(s),
-                          ),
-                          IconButton(icon: const Icon(Icons.edit), onPressed: () => _editTag(s)),
-                          IconButton(
-                            icon: const Icon(Icons.delete, color: Colors.red),
-                            onPressed: () => _delete(s),
-                          ),
-                        ],
-                      ),
-                    );
-                  },
+          ? const EmptyState(
+              icon: Icons.emoji_emotions_outlined,
+              title: '还没有表情包',
+              subtitle: '点右下角添加，它聊天时会用到这些图',
+            )
+          : ListView.builder(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
+              itemCount: _stickers.length,
+              itemBuilder: (ctx, i) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: _StickerRow(
+                  s: _stickers[i],
+                  img: _images[_stickers[i]['id'] as int],
+                  onTogglePin: () => _togglePin(_stickers[i]),
+                  onEditTag: () => _editTag(_stickers[i]),
+                  onDelete: () => _delete(_stickers[i]),
                 ),
+              ),
+            ),
       floatingActionButton: FloatingActionButton(
         onPressed: _showAddMenu,
+        tooltip: '添加表情包',
         child: const Icon(Icons.add),
+      ),
+    );
+  }
+}
+
+class _StickerRow extends StatelessWidget {
+  final Map<String, dynamic> s;
+  final Uint8List? img;
+  final VoidCallback onTogglePin;
+  final VoidCallback onEditTag;
+  final VoidCallback onDelete;
+  const _StickerRow({
+    required this.s,
+    required this.img,
+    required this.onTogglePin,
+    required this.onEditTag,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final pinned = s['pinned'] == true;
+    final tag = (s['tag'] as String?)?.isNotEmpty == true
+        ? s['tag'] as String
+        : '无标签';
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 12, 6, 12),
+      decoration: BoxDecoration(
+        gradient: AppTheme.glassGradient(theme.brightness),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: AppTheme.glassHighlight(theme.brightness),
+          width: 0.5,
+        ),
+      ),
+      child: Row(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: img != null
+                ? Image.memory(
+                    img!,
+                    width: 56,
+                    height: 56,
+                    fit: BoxFit.cover,
+                    gaplessPlayback: true,
+                  )
+                : Container(
+                    width: 56,
+                    height: 56,
+                    color: theme.colorScheme.surfaceContainerHighest,
+                    child: const Icon(Icons.image_outlined, size: 24),
+                  ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  tag,
+                  style: theme.textTheme.bodyLarge,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (pinned) ...[
+                  const SizedBox(height: 4),
+                  StatusPill(color: AppColors.warning, label: '已固定'),
+                ],
+              ],
+            ),
+          ),
+          IconButton(
+            icon: Icon(pinned ? Icons.push_pin : Icons.push_pin_outlined),
+            color: pinned
+                ? AppColors.warning
+                : theme.colorScheme.onSurfaceVariant,
+            tooltip: pinned ? '取消固定' : '固定',
+            onPressed: onTogglePin,
+          ),
+          IconButton(
+            icon: const Icon(Icons.edit_outlined, size: 22),
+            color: theme.colorScheme.onSurfaceVariant,
+            tooltip: '改标签',
+            onPressed: onEditTag,
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete_outline, size: 22),
+            color: AppColors.danger,
+            tooltip: '删除',
+            onPressed: onDelete,
+          ),
+        ],
       ),
     );
   }

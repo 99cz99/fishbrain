@@ -50,6 +50,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **PUT**：`/settings /llm /heybox /qq/quick_login_uin /stickers/<id>`
 - **DELETE**：`/memories/<id> /stickers/<id>`
 
+## app（Flutter）UI 设计体系（Liquid Glass，改 UI 先读这段）
+
+`app/lib/` 是 Liquid Glass 视觉体系（深/浅双主题，暗色为主），核心三个文件：
+- `theme.dart`：设计令牌 `AppColors`（背景/表面/玻璃/语义色）、`AppTheme.light/dark`（完整 ThemeData）、`themeNotifier`（ThemeMode）。玻璃材质用 `AppTheme.glassSurface(brightness)`（半透明表面）、`glassHighlight(brightness)`（边缘高光）、`glassGradient(brightness)`（镜面渐变，顶部略亮模拟反光）。
+- `widgets.dart`：共享组件 `SectionCard`（分组卡片）、`GlassBar`（底部玻璃条，`BackdropFilter` 真模糊）、`StatTile`（KPI 统计块）、`StatusPill`/`EmptyState`/`InfoRow`/`SectionHeader`。
+- `main.dart`：底部导航是**自绘浮动胶囊**（`Row` 平铺 6 项 + `SizedBox(height:44)`），不是 M3 `NavigationBar`——M3 内部 SafeArea 会把底部安全区加在 height 上、且固定 32dp 指示胶囊，导致改高度无感（Flutter 已知问题 PR #150807）。
+
+关键约定：
+- **玻璃 ≠ 每处加模糊**：`BackdropFilter` 真模糊只用于底部导航条（内容从下方滚过）；内容卡片用 `glassGradient` 镜面渐变（贴纯色背景，逐卡模糊既无收益又卡顿）。
+- 内容卡片一律走 `SectionCard`/`glassGradient`，别逐页手写 `Container(color:...)`。
+- `SegmentedButton` 一律加 `showSelectedIcon: false`（iOS 无对勾）。
+- 悬浮导航配合 `Scaffold(extendBody: true)`，各页 ListView 底部留白 ~120（内容不被玻璃条遮挡）。
+- 设置页是 **drill-down**（顶层图标行 → 子页编辑），字段用「标签在上 + 输入框」，不是浮动 `labelText`。
+- 状态页是仪表盘（大标题 hero + KPI 统计条 + 时间线）。
+
 ## 常用命令
 
 **鱼脑（Python，跑手机 Termux，也能本机测）**

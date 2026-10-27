@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../theme.dart';
 
 class LoginPage extends StatefulWidget {
   final ApiClient api;
@@ -133,8 +134,8 @@ class _LoginPageState extends State<LoginPage> {
             _error = _selfHealing
                 ? 'QQ 掉线，正在快捷登录自愈…'
                 : (_quickLoginConfigured
-                    ? 'QQ 掉线（${_reasonLabel(loginReason)}），正在尝试快捷登录自愈…'
-                    : 'QQ 掉线（${_reasonLabel(loginReason)}），鱼脑会自动重连/出码，请稍候');
+                      ? 'QQ 掉线（${_reasonLabel(loginReason)}），正在尝试快捷登录自愈…'
+                      : 'QQ 掉线（${_reasonLabel(loginReason)}），鱼脑会自动重连/出码，请稍候');
           } else {
             _error = _qrAge >= 0
                 ? '二维码已过期（$_qrAge 秒前生成），点「重新出码」换个新的'
@@ -196,15 +197,13 @@ class _LoginPageState extends State<LoginPage> {
     try {
       await widget.api.qqRefreshQr();
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('已重启 QQ，约 20 秒后出新码')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('已重启 QQ，约 20 秒后出新码')));
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('重新出码失败（鱼脑在线吗？）')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('重新出码失败（鱼脑在线吗？）')));
       }
     }
     _tick();
@@ -221,9 +220,8 @@ class _LoginPageState extends State<LoginPage> {
       }
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('快捷登录失败（鱼脑在线吗？）')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('快捷登录失败（鱼脑在线吗？）')));
       }
     }
     _tick();
@@ -239,66 +237,104 @@ class _LoginPageState extends State<LoginPage> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final Widget body;
+    if (_loading) {
+      body = const Center(child: CircularProgressIndicator());
+    } else if (_loggedIn) {
+      body = Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.check_circle, color: AppColors.success, size: 64),
+            const SizedBox(height: 16),
+            Text('QQ 已登录', style: theme.textTheme.titleLarge),
+            const SizedBox(height: 6),
+            Text('可以回「聊天」页看看它了', style: theme.textTheme.bodySmall),
+          ],
+        ),
+      );
+    } else if (_qr != null) {
+      body = Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('用手机 QQ 扫这个码登录', style: theme.textTheme.titleMedium),
+              const SizedBox(height: 16),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(16),
+                child: Container(
+                  color: Colors.white,
+                  padding: const EdgeInsets.all(16),
+                  child: Image.memory(
+                    _qr!,
+                    width: 220,
+                    height: 220,
+                    gaplessPlayback: true,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                '二维码 ${_qrAge >= 0 ? _qrAge : 0} 秒前生成 · 约 2 分钟内有效，请尽快扫',
+                style: theme.textTheme.bodySmall,
+              ),
+              const SizedBox(height: 6),
+              Text('扫码后勾「下次免确认」，登录成功会自动跳转', style: theme.textTheme.bodySmall),
+              const SizedBox(height: 20),
+              OutlinedButton.icon(
+                onPressed: _restartQq,
+                icon: const Icon(Icons.restart_alt),
+                label: const Text('重新出码（重启 QQ）'),
+              ),
+              if (_quickLoginConfigured) ...[
+                const SizedBox(height: 8),
+                _quickLoginButton(),
+              ],
+            ],
+          ),
+        ),
+      );
+    } else {
+      body = Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.qr_code_scanner,
+                size: 48,
+                color: AppColors.textSecondaryLight,
+              ),
+              const SizedBox(height: 16),
+              Text(
+                _error.isEmpty ? '等待二维码…' : _error,
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium,
+              ),
+              if (_qrAge >= 0) ...[
+                const SizedBox(height: 16),
+                OutlinedButton.icon(
+                  onPressed: _restartQq,
+                  icon: const Icon(Icons.restart_alt),
+                  label: const Text('重新出码（重启 QQ）'),
+                ),
+              ],
+              if (_quickLoginConfigured) ...[
+                const SizedBox(height: 8),
+                _quickLoginButton(),
+              ],
+            ],
+          ),
+        ),
+      );
+    }
     return Scaffold(
       appBar: AppBar(title: const Text('扫码登录 QQ')),
-      body: Center(
-        child: _loading
-            ? const CircularProgressIndicator()
-            : _loggedIn
-                ? const Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.check_circle, color: Colors.green, size: 64),
-                      SizedBox(height: 16),
-                      Text('QQ 已登录', style: TextStyle(fontSize: 18)),
-                    ],
-                  )
-                : _qr != null
-                    ? Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Text('用手机 QQ 扫这个码登录'),
-                          const SizedBox(height: 16),
-                          Image.memory(_qr!, width: 240, height: 240),
-                          const SizedBox(height: 8),
-                          Text('二维码 ${_qrAge >= 0 ? _qrAge : 0} 秒前生成 · 约 2 分钟内有效，请尽快扫'),
-                          const SizedBox(height: 8),
-                          const Text('扫码后勾「下次免确认」，登录成功会自动跳转'),
-                          const SizedBox(height: 16),
-                          OutlinedButton.icon(
-                            onPressed: _restartQq,
-                            icon: const Icon(Icons.restart_alt),
-                            label: const Text('重新出码（重启 QQ）'),
-                          ),
-                          if (_quickLoginConfigured) ...[
-                            const SizedBox(height: 8),
-                            _quickLoginButton(),
-                          ],
-                        ],
-                      )
-                    : Padding(
-                        padding: const EdgeInsets.all(24),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(_error.isEmpty ? '等待二维码…' : _error,
-                                textAlign: TextAlign.center),
-                            if (_qrAge >= 0) ...[
-                              const SizedBox(height: 16),
-                              OutlinedButton.icon(
-                                onPressed: _restartQq,
-                                icon: const Icon(Icons.restart_alt),
-                                label: const Text('重新出码（重启 QQ）'),
-                              ),
-                            ],
-                            if (_quickLoginConfigured) ...[
-                              const SizedBox(height: 8),
-                              _quickLoginButton(),
-                            ],
-                          ],
-                        ),
-                      ),
-      ),
+      body: body,
     );
   }
 }

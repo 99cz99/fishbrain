@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 
 import '../api.dart';
 import '../models.dart';
+import '../theme.dart';
+import '../widgets.dart';
 
 class ApprovalPage extends StatefulWidget {
   final ApiClient api;
@@ -54,32 +56,69 @@ class _ApprovalPageState extends State<ApprovalPage> {
     return Scaffold(
       appBar: AppBar(title: const Text('审批')),
       body: _pending.isEmpty
-          ? const Center(child: Text('没有待审批的请求'))
+          ? const EmptyState(
+              icon: Icons.fact_check_outlined,
+              title: '没有待审批的请求',
+              subtitle: '它想对外做什么时，会在这里等你拍板',
+            )
           : ListView.builder(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
               itemCount: _pending.length,
-              itemBuilder: (_, i) {
-                final a = _pending[i];
-                return Card(
-                  child: ListTile(
-                    title: Text(a.summary),
-                    subtitle: Text('${a.kind} · ${a.createdAt}'),
-                    trailing: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          onPressed: () => _act(a.id, 'approve'),
-                          icon: const Icon(Icons.check_circle, color: Colors.green),
-                        ),
-                        IconButton(
-                          onPressed: () => _act(a.id, 'reject'),
-                          icon: const Icon(Icons.cancel, color: Colors.red),
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              },
+              itemBuilder: (_, i) => Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: _ApprovalCard(a: _pending[i], onAct: _act),
+              ),
             ),
+    );
+  }
+}
+
+class _ApprovalCard extends StatelessWidget {
+  final Approval a;
+  final Future<void> Function(int id, String action) onAct;
+  const _ApprovalCard({required this.a, required this.onAct});
+
+  String _kindLabel(String k) => switch (k) {
+    'publish' => '发空间',
+    'money' => '花钱',
+    _ => k,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SectionCard(
+      children: [
+        Row(
+          children: [
+            StatusPill(color: AppColors.warning, label: _kindLabel(a.kind)),
+            const Spacer(),
+            Text(a.createdAt, style: theme.textTheme.labelSmall),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Text(a.summary, style: theme.textTheme.bodyLarge),
+        const SizedBox(height: 14),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: () => onAct(a.id, 'reject'),
+                icon: const Icon(Icons.close),
+                label: const Text('拒绝'),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: FilledButton.icon(
+                onPressed: () => onAct(a.id, 'approve'),
+                icon: const Icon(Icons.check),
+                label: const Text('同意'),
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }

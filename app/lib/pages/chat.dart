@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 
 import '../api.dart';
 import '../models.dart';
+import '../theme.dart';
+import '../widgets.dart';
 
 class ChatPage extends StatefulWidget {
   final ApiClient api;
@@ -43,18 +45,50 @@ class _ChatPageState extends State<ChatPage> {
     return Scaffold(
       appBar: AppBar(title: const Text('聊天记录')),
       body: _chat.isEmpty
-          ? const Center(child: Text('还没有聊天记录'))
+          ? const EmptyState(
+              icon: Icons.forum_outlined,
+              title: '还没有聊天记录',
+              subtitle: '它和别人的对话会实时出现在这里',
+            )
           : ListView.builder(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
               itemCount: _chat.length,
               itemBuilder: (_, i) {
                 final c = _chat[i];
-                return ListTile(
-                  leading: const Icon(Icons.chat_bubble_outline),
-                  title: Text(c.message),
-                  subtitle: Text(c.ts),
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: _ChatRow(c: c),
                 );
               },
             ),
+    );
+  }
+}
+
+class _ChatRow extends StatelessWidget {
+  final LogEntry c;
+  const _ChatRow({required this.c});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final b = theme.brightness;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        gradient: AppTheme.glassGradient(b),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppTheme.glassHighlight(b), width: 0.5),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(c.message, style: theme.textTheme.bodyMedium),
+          const SizedBox(height: 4),
+          Text(c.ts, style: theme.textTheme.labelSmall),
+        ],
+      ),
     );
   }
 }
