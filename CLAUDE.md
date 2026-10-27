@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Fishbrain (dfy)
 
 一个 24h 在线、像真人一样的 AI 朋友（赛博生命体），住在安卓手机里，走协议/API 玩 QQ、小黑盒、B站。
-完整设计 + 分阶段路线见计划文件 `qq-joyful-rossum.md`（本地 `.claude/plans/` 下，不入库；**权威设计文档**，本文件只记「怎么开发」）。
+完整设计 + 分阶段路线见计划文件 `qq-joyful-rossum.md`（用户全局 `~/.claude/plans/qq-joyful-rossum.md`（不在仓库、不入库）；**权威设计文档**，本文件只记「怎么开发」）。
 
 ## 架构（big picture）
 
@@ -32,7 +32,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **生命体怎么「活」**：核心是 `life.py` 的心跳——它自己定下次醒来的时间（存 `life_state`，重启不丢），到点醒来先定「本能面 drive」（陪伴/表达/好奇/成长/存在/玩耍/none，多数时候 none=发呆），非 none 再按 drive 从工具注册表筛相关工具、用 function calling 选一个具体动作。
 
-**能力接线方式（工具注册表，不是 prompt 枚举）**：核心状态工具在 `life._core_tools()`（update_mood/schedule_next_wake/set_drive）；高层动作在 `life.action_tools()`（publish/reflect）；平台(NapCat)工具在 `qq_bot.get_tools()`（约 92 个，返回 function-calling 定义，`handle_tool` 分发）。`autonomy.DRIVE_TOOLS` 是 drive→工具名映射，`select_tools(drive)` 筛选（现在全量；工具多了再加动态路由）。加新平台 = 写个模块暴露 `get_tools()` + `handle_tool()`，核心不改（`heybox.py` 就是照 `qq_bot.py` 写的现成例子）。
+**能力接线方式（工具注册表，不是 prompt 枚举）**：核心状态工具在 `life._core_tools()`（update_mood/schedule_next_wake/set_drive）；高层动作在 `life.action_tools()`（publish/reflect）；平台(NapCat)工具在 `qq_bot.get_tools()`（约 92 个，返回 function-calling 定义，`handle_tool` 分发）。`autonomy.DRIVE_TOOLS` 是 drive→工具名映射，`select_tools(drive)` 筛选（现在全量；工具多了再加动态路由）。加新平台 = 写个模块暴露 `get_tools()` + `handle_tool()`，核心不改（`heybox.py` 就是照 `qq_bot.py` 写的现成例子）。**坑**：`brain.chat_with_tools` 的 function calling **只在 `provider=="openai"`（或 openai 兼容，默认 DeepSeek）时生效**——anthropic/gemini 会静默回退成纯 chat、不返回 `tool_calls`，故整套工具/自主层（`life.decide_action`、`publish` 等）依赖 openai 系 provider。
 
 **记忆与回复（核心行为，改这里先读这段）**——原则：**智能体记忆统一**（私聊/群聊/各平台都是同一个智能体的记忆，不按渠道隔离；参考 Generative Agents「统一存+按相关性取」/ MemGPT「工作记忆+召回记忆」/ aidevops「隐私边界」）。
 - 长期记忆 `memory.py`：`memories` 表每条带 `importance`(1-10)、`scope`(owner / private:{id} / group:{id} / global，**只是「来源」标签，不是召回偏好**)、`absorbed`/`absorbed_by`(反思合并)。`retrieve(query, k, context_scope)` 打分 `0.5×recency + 3.0×relevance + 2.0×importance`（relevance = 字符 2-gram `_overlap`，**无 scope 亲和项**）；**载入时按 context_scope 硬过滤隐私**——`owner` 全量、`group:{id}` 只召回本群+global、`private:{id}` 只召回本人+global（群聊不载入私聊记忆）。`consolidate_memory` **只喂「对方说」不喂「我回」**（结构性堵 LLM 谎话固化），`reflect_memories` 压成高级洞察、旧记忆软删除，`MAX_MEMORIES=300` 超了淘汰「importance×访问衰减」最低的。
@@ -44,7 +44,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **QQ 数据流**：QQ 消息 → NapCat → OneBot WS(8081) → `qq_bot.py` → `brain.chat`/`chat_with_tools`（只带 `publish` 工具）→ 回复 → NapCat → QQ。
 
-**HTTP 端点**（server.py）：`/status /logs /chat /memories /settings /llm /usage /approval/pending /command /qrcode /life/state /life/wake /qq/start /qq/stop /qq/status /qq/api /qq/refresh_qr /qq/apply_onebot /deploy/qq /deploy/status /heybox /heybox/status /heybox/sign /growth/evolve /persona/reset /stickers /stickers/<id>/image`。
+**HTTP 端点**（server.py）：
+- **GET**：`/status /logs /chat /memories /settings /llm /usage /approval/pending /qrcode /life/state /qq/status /heybox/status /deploy/status /stickers /stickers/<id>/image`
+- **POST**：`/command /life/wake /qq/start /qq/stop /qq/refresh_qr /qq/api /qq/apply_onebot /deploy/qq /heybox/sign /growth/evolve /persona/reset /approval/<id>/approve /approval/<id>/reject /stickers`
+- **PUT**：`/settings /llm /heybox /qq/quick_login_uin /stickers/<id>`
+- **DELETE**：`/memories/<id> /stickers/<id>`
 
 ## 常用命令
 
@@ -81,6 +85,7 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux sh -c 'sh /data/data/com.termux/
 ## 关键约定 / 坑（硬经验，别重踩）
 
 - **端口固定**：鱼脑 8765、NapCat WS 8081、NapCat WebUI 6099，全 127.0.0.1。
+- **`setup-qq.sh` / `onebot11.json` 必须与 `server.py` 同目录（Termux `~/dfy/`）**：`/deploy/qq` 读 `setup-qq.sh`、`/qq/apply_onebot` 读 `onebot11.json`。repo 里它们在 `deploy/`，app 部署向导会写入 Termux；纯 adb 手动部署时（下方命令只 push `fish/*.py` + `run-fish.sh`）需一并 push。
 - **凭据 vs 软设定**：LLM 的 key/base_url/model 存 **SQLite settings**（app「设定」页改，`/llm` 读写，`brain.py` 每次动态读）；**别**再放 config.toml。小黑盒 token 也已移到 **SQLite settings**（app「设定」页填、`/heybox` PUT 热生效；config.toml 里的旧 token 只在「从未在 app 设置过」时首次迁移一次，之后 app 是权威、清空即停用）。B站 cookie 才放 config.toml。
 - **小黑盒 hkey 签名 + 凭据**：app 接口（签到/发帖）走外部 hkey 服务 `https://hkey.qcciii.com/hkey`；web 接口（浏览/抽奖/领券）本地算 `makeWebHkey`（`heybox.py` 里 MD5+混淆，移植自 yowiv08/heybox，已用 Node 原版比对值一致）。凭据 `pkey=xxx;x_xhh_tokenid=xxx` 必须是**手机 app 版** pkey——网页版 `user_pkey` / 加速器的 pkey 都不行（签到会「请重新登录」）。
 - **QQ 用 NapCat 不是 Lagrange**：Lagrange 签名服务器停服。NapCat 在 proot-Debian 跑 linuxqq + xvfb，flags：`--no-sandbox --disable-gpu --disable-dev-shm-usage --no-zygote --use-gl=swiftshader`。
