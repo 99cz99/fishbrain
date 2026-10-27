@@ -1017,6 +1017,8 @@ class QQBot:
         if event.get("meta_event_type") == "lifecycle" and event.get("sub_type") == "connect":
             self.self_id = event.get("self_id")
             if self.self_id:
+                # 顺手记住自己的 QQ 号，供掉线后 -q 快速登录自愈用
+                self.store.set_setting("qq_quick_login_uin", str(self.self_id))
                 self.store.add_log("info", "status", f"QQ 账号 {self.self_id} 在线")
 
     # ---- 回复决策：私聊/群@必回，群里其他人走主动插话漏斗 ----

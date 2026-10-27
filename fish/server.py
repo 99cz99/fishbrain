@@ -30,11 +30,15 @@ TERMUX_BIN = "/data/data/com.termux/files/usr/bin"
 PROOT_DISTRO = TERMUX_BIN + "/proot-distro"
 QQ_WS_PORT = 8081
 # QQ(NapCat) 启动/停止命令，跑在 proot-Debian 容器内
-QQ_START_CMD = ("mkdir -p /root/napcat && cd /opt/QQ && "
-                "xvfb-run -e /root/napcat/xvfb.log -a ./qq --no-sandbox --disable-gpu "
-                "--disable-dev-shm-usage --no-zygote --use-gl=swiftshader "
-                ">> /root/napcat/qq.log 2>&1; "
-                "echo QQ_EXIT_CODE=$? >> /root/napcat/qq.log")
+def _qq_start_cmd(uin=None):
+    """拼 QQ 启动命令（跑 proot-Debian 容器内）。uin 为纯数字时追加 `-q <uin>` 走快速登录（掉线自愈）。"""
+    ql = f"-q {str(uin).strip()} " if (uin is not None and str(uin).strip().isdigit()) else ""
+    return ("mkdir -p /root/napcat && cd /opt/QQ && "
+            "xvfb-run -e /root/napcat/xvfb.log -a ./qq --no-sandbox --disable-gpu "
+            "--disable-dev-shm-usage --no-zygote --use-gl=swiftshader "
+            + ql +
+            ">> /root/napcat/qq.log 2>&1; "
+            "echo QQ_EXIT_CODE=$? >> /root/napcat/qq.log")
 # 先 SIGTERM 优雅退出（让 QQ 把 keystore 写盘，登录态才持久），再 SIGKILL 兜底。
 # 用 [q]/[X]/[x] 括号正则避免 pkill 匹配到自身的 bash -c 命令。
 QQ_STOP_CMD = ("pkill -TERM -f '[q]q --no-sandbox'; sleep 15; "
@@ -50,8 +54,8 @@ QQ_LOG_PATH = ("/data/data/com.termux/files/usr/var/lib/proot-distro/containers/
                "rootfs/root/napcat/qq.log")
 # 「进程活着但已掉线」的宽限期（秒）：避开 linuxqq 正常启动/扫码/NapCat 自愈窗口，别抢重启
 QQ_STALE_GRACE_SECONDS = 300
-# 「掉线但进程残留」时记日志的节流间隔（秒）。
-# 原为自动重启冷却；因 proot 下 keystore 落不了盘、重启 linuxqq 必丢登录，已改为只记日志不重启。
+# 「掉线但进程残留」时的自愈/日志节流间隔（秒）。
+# 配了快捷登录号（qq_quick_login_uin）时是 -q 自愈的冷却；没配或属硬掉线时只是日志节流。
 QQ_STALE_RESTART_COOLDOWN = 900
 # 连续自动拉起 N 次仍无法稳定在线 → 熔断（区别 cooldown：cooldown 是单次间隔，熔断是连续失败后的长暂停）
 QQ_AUTO_MAX_FAIL = 5
@@ -264,6 +268,12 @@ class Fish:
         self._build_heybox()
         return self.heybox.status() if self.heybox else {"enabled": False}
 
+    def set_qq_quick_login_uin(self, uin):
+        """app 保存快捷登录 QQ 号（掉线自愈用）。空串/非数字 = 停用自愈。"""
+        val = str(uin or "").strip()
+        self.store.set_setting("qq_quick_login_uin", val)
+        return {"ok": True, "uin_configured": val.isdigit()}
+
     def command(self, cmd, args):
         # 阶段 0 只记录；阶段 3 由 autonomy 真正执行
         if cmd == "stop":
@@ -286,7 +296,7 @@ class Fish:
         return "已记录指令: " + self.current_task
 
     # ---- QQ 生命周期（NapCat/linuxqq 跑在 proot-Debian）----
-    def qq_start(self, reset_circuit=False):
+    def qq_start(self, reset_circuit=False, uin=None):
         self._qq_auto = True  # 显式/自动启动后，恢复自动保活
         if reset_circuit:  # 仅显式/人工启动才清零熔断（自动拉起走 qq_start 不清，否则计数永远累加不到阈值）
             self._qq_auto_fail_count = 0
@@ -300,11 +310,12 @@ class Fish:
             err_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "qq_start_err.log")
             with open(err_path, "w") as f:
                 subprocess.Popen(
-                    [PROOT_DISTRO, "login", "debian", "--hostname", "qq-bot", "--", "bash", "-c", QQ_START_CMD],
+                    [PROOT_DISTRO, "login", "debian", "--hostname", "qq-bot", "--", "bash", "-c", _qq_start_cmd(uin)],
                     env=_qq_env(), start_new_session=True,
                     stdout=f, stderr=subprocess.STDOUT,
                 )
-            self.log("info", "status", "已发起 QQ 启动（NapCat）")
+            tag = f"（快速登录 {uin}）" if uin else ""
+            self.log("info", "status", f"已发起 QQ 启动（NapCat）{tag}")
             return {"ok": True, "already": False}
         except Exception as e:
             self.log("error", "error", f"QQ 启动失败: {e}")
@@ -334,6 +345,14 @@ class Fish:
         """进程活着 + 账号/WS 已掉线 + 无新鲜二维码 = 掉线但进程残留（NapCat 卡死态）。"""
         return _qq_process_alive() and not self._qq_really_online() and not _qq_qr_fresh(qr_path)
 
+    def _qq_self_heal_uin(self):
+        """自愈用的快捷登录 QQ 号：读 settings（_on_meta 登录时自动填），纯数字才返回，否则 None。"""
+        raw = self.store.get_setting_raw("qq_quick_login_uin")
+        if raw is None:
+            return None
+        s = str(raw).strip()
+        return s if s.isdigit() else None
+
     def qq_status(self):
         qr_path = self.qq_cfg.get("qrcode_path", DEFAULT_QRCODE_PATH)
         self_id = None
@@ -357,6 +376,7 @@ class Fish:
             "login_reason": _parse_qq_log_state(),  # qq.log 最近一次登录事件归类
             "self_id": self_id,            # 登录后的 QQ 号
             "login_uin": self._find_login_uin(),  # 从 onebot11_<uin>.json 文件名探测到的 QQ 号
+            "quick_login_configured": bool(self._qq_self_heal_uin()),  # 是否配了 -q 快捷登录号（只布尔不吐号）
             "auto_circuit": bool(self._qq_auto_circuit_until and time.time() < self._qq_auto_circuit_until),
             "auto_fail_count": self._qq_auto_fail_count,
         }
@@ -381,7 +401,7 @@ class Fish:
 
     def qq_keep_alive(self):
         """自保本能：QQ 进程掉了就自动拉起（带风控护栏 + 扫码停手）。
-        进程活着但已掉线（账号/WS 掉线、无新鲜码）时只记日志不重启（proot 下重启必丢登录）。
+        进程活着但已掉线（账号/WS 掉线、无新鲜码）时：配了快捷登录号且属软掉线则 -q 自愈，否则只记日志。
         由 autonomy 周期性调用；用户显式停 QQ 后不再自动拉起。"""
         if not self._qq_auto:
             return
@@ -427,14 +447,32 @@ class Fish:
             self.log("info", "qq", "检测到 QQ 离线，自动拉起…")
             return self.qq_start()
         # 分支 2：进程活着但掉线（WS 不通 + 无新鲜码）。
-        # proot 下 keystore 落不了盘、重启 linuxqq 必丢登录，自动重启 = 自动掉登录。
-        # 所以这里不重启，只按节流记日志，交回 qq_bot 的 5s 重连去恢复 WS。
+        # 配了快捷登录号且属「软掉线」时，用 -q 快速登录自愈一次；否则只按节流记日志，交回 qq_bot 的 5s 重连。
         if not self._qq_stale(qr_path):
             return
         if now - self._last_qq_online_ts < QQ_STALE_GRACE_SECONDS:
             return  # 可能还在正常启动/扫码/NapCat 自愈窗口，先别动作
+        if self._qq_auto_circuit_until:
+            if now < self._qq_auto_circuit_until:
+                return  # 熔断中，暂停自动恢复
+            self._qq_auto_fail_count = 0
+            self._qq_auto_circuit_until = 0.0
         if now - self._last_qq_stale_restart_ts < QQ_STALE_RESTART_COOLDOWN:
-            return  # 日志节流，避免刷屏
+            return  # 单次节流，避免频繁重登
+        reason = _parse_qq_log_state()
+        uin = self._qq_self_heal_uin()
+        if uin and reason in ("offline", "login_service_dropped", "nt_timeout"):
+            # 软掉线：账号/连接掉了但凭据大概率还在，-q 快速登录比重新扫码快
+            self._last_qq_stale_restart_ts = now
+            self._qq_auto_fail_count += 1
+            if self._qq_auto_fail_count >= QQ_AUTO_MAX_FAIL:
+                self._qq_auto_circuit_until = now + QQ_AUTO_CIRCUIT_SECONDS
+                self.log("warn", "qq",
+                         f"QQ 连续 {self._qq_auto_fail_count} 次掉线自愈仍未稳定在线，熔断 {QQ_AUTO_CIRCUIT_SECONDS // 60} 分钟（可手动启动重置）")
+                return
+            self.log("info", "qq", f"QQ 掉线自愈：-q 快速登录拉起（reason={reason}）")
+            threading.Thread(target=self._restart_qq, args=(uin,), daemon=True).start()
+            return
         self._last_qq_stale_restart_ts = now
         self.log("warn", "qq", "QQ 进程活着但 WS 掉线（NapCat 疑似卡住），不重启以保留登录态，等待自动重连")
 
@@ -492,12 +530,12 @@ class Fish:
         except Exception:
             return False
 
-    def _restart_qq(self):
-        """后台优雅重启 QQ（stop→start），给 keystore 落盘留窗口。"""
+    def _restart_qq(self, uin=None):
+        """后台优雅重启 QQ（stop→start），给 keystore 落盘留窗口；uin 非空则走 -q 快速登录。"""
         time.sleep(1)
         self.qq_stop()
         time.sleep(2)
-        self.qq_start()
+        self.qq_start(uin=uin)
 
     # ---- 自省（nudge 一次 reflect）----
     def growth_evolve(self):
@@ -821,6 +859,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, merged)
         if path == "/heybox":
             return self._send(200, f.set_heybox_token(body.get("token", "")))
+        if path == "/qq/quick_login_uin":
+            return self._send(200, f.set_qq_quick_login_uin(body.get("uin", "")))
         if path.startswith("/stickers/"):
             try:
                 sid = int(path.split("/")[-1])

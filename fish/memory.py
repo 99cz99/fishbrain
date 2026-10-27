@@ -16,6 +16,7 @@ import time
 DEFAULT_SETTINGS = {
     "name": "",                       # 名字（用户自设，默认空）
     "owner_qq": "",                   # 主人 QQ 号（主动冒泡发给谁）
+    "qq_quick_login_uin": "",         # 鱼脑自己登录的 QQ 号（-q 快捷登录自愈用；_on_meta 登录时自动填）
     "city": "",                       # 所在城市（中文名，天气感知用；空=不启用）
     "temperament": {                  # 气质：心情衰减的基线 + 平复快慢（稳定层，心情在其上波动）
         "valence": 0.0,               # 情绪基调 -1(偏阴郁) ~ 1(偏阳光)
@@ -176,7 +177,7 @@ class Store:
         self._conn.executescript(SCHEMA)
         self._migrate()
         self._conn.commit()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # 可重入：add_memory/update_sticker 持锁时也会调 get_* 读方法
 
     def _migrate(self):
         # 老库补 platform 列
@@ -203,20 +204,21 @@ class Store:
 
     # ---- 软设定 ----
     def get_settings(self):
-        d = dict(DEFAULT_SETTINGS)
-        for key, value in self._conn.execute("SELECT key, value FROM settings"):
-            try:
-                value = json.loads(value)
-            except Exception:
-                pass
-            # 嵌套 dict（如 llm）深合并：存了不完整子项时，缺的键回退默认值
-            if isinstance(value, dict) and isinstance(d.get(key), dict):
-                merged = dict(d[key])
-                merged.update(value)
-                d[key] = merged
-            else:
-                d[key] = value
-        return d
+        with self._lock:
+            d = dict(DEFAULT_SETTINGS)
+            for key, value in self._conn.execute("SELECT key, value FROM settings"):
+                try:
+                    value = json.loads(value)
+                except Exception:
+                    pass
+                # 嵌套 dict（如 llm）深合并：存了不完整子项时，缺的键回退默认值
+                if isinstance(value, dict) and isinstance(d.get(key), dict):
+                    merged = dict(d[key])
+                    merged.update(value)
+                    d[key] = merged
+                else:
+                    d[key] = value
+            return d
 
     def set_setting(self, key, value):
         with self._lock:
@@ -233,13 +235,14 @@ class Store:
 
     def get_setting_raw(self, key):
         """读原始 settings 表，区分「键不存在」与「值为空串」；不存在返回 None。"""
-        row = self._conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
-        if row is None:
-            return None
-        try:
-            return json.loads(row[0])
-        except Exception:
-            return row[0]
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+            if row is None:
+                return None
+            try:
+                return json.loads(row[0])
+            except Exception:
+                return row[0]
 
     # ---- 生命状态（它的「心」：心情 + 心跳时间，持久化，重启不丢）----
     def get_life_state(self):
@@ -314,23 +317,24 @@ class Store:
             self._conn.execute("DELETE FROM memories WHERE id = ?", (r[0],))
 
     def get_memories(self, kind=None, subject=None, platform=None, limit=100, active_only=False, scope=None):
-        q = "SELECT id, kind, subject, content, platform, created_at FROM memories"
-        cond, args = [], []
-        if kind:
-            cond.append("kind = ?"); args.append(kind)
-        if subject:
-            cond.append("subject = ?"); args.append(subject)
-        if platform:
-            cond.append("platform = ?"); args.append(platform)
-        if scope:
-            cond.append("scope = ?"); args.append(scope)
-        if active_only:
-            cond.append("absorbed = 0")
-        if cond:
-            q += " WHERE " + " AND ".join(cond)
-        q += " ORDER BY id DESC LIMIT ?"; args.append(limit)
-        cols = ("id", "kind", "subject", "content", "platform", "created_at")
-        return [dict(zip(cols, r)) for r in self._conn.execute(q, args)]
+        with self._lock:
+            q = "SELECT id, kind, subject, content, platform, created_at FROM memories"
+            cond, args = [], []
+            if kind:
+                cond.append("kind = ?"); args.append(kind)
+            if subject:
+                cond.append("subject = ?"); args.append(subject)
+            if platform:
+                cond.append("platform = ?"); args.append(platform)
+            if scope:
+                cond.append("scope = ?"); args.append(scope)
+            if active_only:
+                cond.append("absorbed = 0")
+            if cond:
+                q += " WHERE " + " AND ".join(cond)
+            q += " ORDER BY id DESC LIMIT ?"; args.append(limit)
+            cols = ("id", "kind", "subject", "content", "platform", "created_at")
+            return [dict(zip(cols, r)) for r in self._conn.execute(q, args)]
 
     def retrieve(self, query, k=8, candidate_limit=50, context_scope=None):
         """三维召回（recency+relevance+importance），按 context_scope 硬过滤隐私：
@@ -399,17 +403,18 @@ class Store:
             self._conn.commit()
 
     def get_logs(self, category=None, level=None, limit=100):
-        q = "SELECT id, ts, level, category, message FROM logs"
-        cond, args = [], []
-        if category:
-            cond.append("category = ?"); args.append(category)
-        if level:
-            cond.append("level = ?"); args.append(level)
-        if cond:
-            q += " WHERE " + " AND ".join(cond)
-        q += " ORDER BY id DESC LIMIT ?"; args.append(limit)
-        cols = ("id", "ts", "level", "category", "message")
-        return [dict(zip(cols, r)) for r in self._conn.execute(q, args)]
+        with self._lock:
+            q = "SELECT id, ts, level, category, message FROM logs"
+            cond, args = [], []
+            if category:
+                cond.append("category = ?"); args.append(category)
+            if level:
+                cond.append("level = ?"); args.append(level)
+            if cond:
+                q += " WHERE " + " AND ".join(cond)
+            q += " ORDER BY id DESC LIMIT ?"; args.append(limit)
+            cols = ("id", "ts", "level", "category", "message")
+            return [dict(zip(cols, r)) for r in self._conn.execute(q, args)]
 
     # ---- 短期上下文 ----
     def add_short_term(self, session, role, content, platform=""):
@@ -468,10 +473,11 @@ class Store:
             return cur.lastrowid
 
     def get_pending_approvals(self):
-        cols = ("id", "kind", "summary", "status", "created_at")
-        return [dict(zip(cols, r)) for r in self._conn.execute(
-            "SELECT id, kind, summary, status, created_at FROM approvals "
-            "WHERE status = 'pending' ORDER BY id DESC")]
+        with self._lock:
+            cols = ("id", "kind", "summary", "status", "created_at")
+            return [dict(zip(cols, r)) for r in self._conn.execute(
+                "SELECT id, kind, summary, status, created_at FROM approvals "
+                "WHERE status = 'pending' ORDER BY id DESC")]
 
     def set_approval_status(self, aid, status):
         with self._lock:
@@ -483,10 +489,11 @@ class Store:
             return cur.rowcount > 0
 
     def get_approval(self, aid):
-        cols = ("id", "kind", "summary", "status", "created_at")
-        rows = [dict(zip(cols, r)) for r in self._conn.execute(
-            "SELECT id, kind, summary, status, created_at FROM approvals WHERE id = ?", (aid,))]
-        return rows[0] if rows else None
+        with self._lock:
+            cols = ("id", "kind", "summary", "status", "created_at")
+            rows = [dict(zip(cols, r)) for r in self._conn.execute(
+                "SELECT id, kind, summary, status, created_at FROM approvals WHERE id = ?", (aid,))]
+            return rows[0] if rows else None
 
     # ---- 表情包库 ----
     def add_sticker(self, tag, path, sha256):
@@ -509,18 +516,21 @@ class Store:
             return cur.lastrowid
 
     def has_sticker(self, sha256):
-        return self._conn.execute("SELECT 1 FROM stickers WHERE sha256 = ?", (sha256,)).fetchone() is not None
+        with self._lock:
+            return self._conn.execute("SELECT 1 FROM stickers WHERE sha256 = ?", (sha256,)).fetchone() is not None
 
     def get_stickers(self, limit=50):
-        cols = ("id", "tag", "path", "sha256", "pinned", "created_at")
-        return [dict(zip(cols, r)) for r in self._conn.execute(
-            "SELECT id, tag, path, sha256, pinned, created_at FROM stickers ORDER BY pinned DESC, id DESC LIMIT ?", (limit,))]
+        with self._lock:
+            cols = ("id", "tag", "path", "sha256", "pinned", "created_at")
+            return [dict(zip(cols, r)) for r in self._conn.execute(
+                "SELECT id, tag, path, sha256, pinned, created_at FROM stickers ORDER BY pinned DESC, id DESC LIMIT ?", (limit,))]
 
     def get_sticker(self, sid):
-        cols = ("id", "tag", "path", "sha256", "pinned", "created_at")
-        rows = [dict(zip(cols, r)) for r in self._conn.execute(
-            "SELECT id, tag, path, sha256, pinned, created_at FROM stickers WHERE id = ?", (sid,))]
-        return rows[0] if rows else None
+        with self._lock:
+            cols = ("id", "tag", "path", "sha256", "pinned", "created_at")
+            rows = [dict(zip(cols, r)) for r in self._conn.execute(
+                "SELECT id, tag, path, sha256, pinned, created_at FROM stickers WHERE id = ?", (sid,))]
+            return rows[0] if rows else None
 
     def update_sticker(self, sid, tag=None, pinned=None):
         """部分更新：只改提供的字段（tag=None 表示不改，pinned=None 表示不改）。"""
@@ -554,11 +564,12 @@ class Store:
         tag = (tag or "").strip()
         if not tag:
             return None
-        for path, t in self._conn.execute(
-            "SELECT path, tag FROM stickers ORDER BY id DESC LIMIT 200").fetchall():
-            t = t or ""
-            if tag in t or t in tag:
-                return path
+        with self._lock:
+            for path, t in self._conn.execute(
+                "SELECT path, tag FROM stickers ORDER BY id DESC LIMIT 200").fetchall():
+                t = t or ""
+                if tag in t or t in tag:
+                    return path
         return None
 
     def close(self):
