@@ -44,6 +44,11 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final ApiClient _api = ApiClient();
   int _index = 0;
+  @override
+  void dispose() {
+    _api.close();
+    super.dispose();
+  }
 
   static const _tabs = <(IconData, String)>[
     (Icons.monitor_heart_outlined, '状态'),

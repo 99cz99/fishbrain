@@ -35,7 +35,7 @@ class StickerPage extends StatefulWidget {
 
 class _StickerPageState extends State<StickerPage> {
   List<Map<String, dynamic>> _stickers = [];
-  final Map<int, Uint8List> _images = {};
+  final Map<int, Future<Uint8List>> _images = {};
   bool _loading = true;
 
   @override
@@ -52,22 +52,17 @@ class _StickerPageState extends State<StickerPage> {
         _stickers = list;
         _loading = false;
       });
-      for (final s in list) {
-        final id = s['id'] as int;
-        if (!_images.containsKey(id)) {
-          _loadImage(id);
-        }
-      }
+      final ids = list.map((s) => s['id']).toSet();
+      _images.removeWhere((id, _) => !ids.contains(id));
     } catch (_) {
       if (mounted) setState(() => _loading = false);
     }
   }
 
-  Future<void> _loadImage(int id) async {
-    try {
-      final bytes = await widget.api.stickerImage(id);
-      if (mounted) setState(() => _images[id] = bytes);
-    } catch (_) {}
+  Future<Uint8List> _loadImage(int id) {
+    if (_images.containsKey(id)) return _images[id]!;
+    if (_images.length >= 12) _images.remove(_images.keys.first);
+    return _images[id] = widget.api.stickerImage(id);
   }
 
   void _toast(String msg) {
@@ -280,12 +275,15 @@ class _StickerPageState extends State<StickerPage> {
               itemCount: _stickers.length,
               itemBuilder: (ctx, i) => Padding(
                 padding: const EdgeInsets.only(bottom: 8),
-                child: _StickerRow(
-                  s: _stickers[i],
-                  img: _images[_stickers[i]['id'] as int],
-                  onTogglePin: () => _togglePin(_stickers[i]),
-                  onEditTag: () => _editTag(_stickers[i]),
-                  onDelete: () => _delete(_stickers[i]),
+                child: FutureBuilder<Uint8List>(
+                  future: _loadImage(_stickers[i]['id'] as int),
+                  builder: (_, snapshot) => _StickerRow(
+                    s: _stickers[i],
+                    img: snapshot.data,
+                    onTogglePin: () => _togglePin(_stickers[i]),
+                    onEditTag: () => _editTag(_stickers[i]),
+                    onDelete: () => _delete(_stickers[i]),
+                  ),
                 ),
               ),
             ),
@@ -339,6 +337,9 @@ class _StickerRow extends StatelessWidget {
                     width: 56,
                     height: 56,
                     fit: BoxFit.cover,
+                    cacheWidth: 112,
+                    errorBuilder: (_, _, _) =>
+                        const Icon(Icons.broken_image_outlined),
                     gaplessPlayback: true,
                   )
                 : Container(

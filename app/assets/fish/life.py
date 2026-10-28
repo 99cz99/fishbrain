@@ -135,10 +135,21 @@ class Life:
         if sp_text:
             lines.append(sp_text)
         lines.append(f"你现在偏向「{drive}」这个天性面。")
+        lines.append(self._pending_context(settings))
         if extra_context:
             lines.append(str(extra_context))
         lines.append("用工具做一件具体的事吧（也可以什么都不做，那就不调工具）。")
         return "\n".join(lines)
+
+    def _pending_context(self, settings):
+        owner = str(settings.get("owner_qq", "") or "").strip()
+        if not owner:
+            return ""
+        rows = self.store.due_intentions(f"qq:{owner}")
+        if not rows:
+            return ""
+        return ("可考虑跟进的主人未完事项（不是必须联系；尊重静默与最近互动，跟进时send_message必须带intention_id）：\n"
+                + "\n".join(f"intention_id={r['id']}：{r['content']}" for r in rows))
 
     # ---- 拼「当下」 ----
     def _prompt(self, settings, st):
@@ -149,10 +160,11 @@ class Life:
 
         since_wake = _fmt_elapsed(now - last_wake) if last_wake else "（第一次醒来）"
 
-        recent = self.store.get_logs(limit=8)
+        # Chat/action logs are diagnostics, not evidence: deletion must remove their influence.
+        recent = self.store.get_logs("status", limit=8)
         recent_text = "\n".join(f"- [{r['ts']}] {r['message']}" for r in recent) or "（还没有发生过什么）"
 
-        mems = self.store.get_memories(limit=8)
+        mems = [m for m in self.store.get_memories(limit=20) if m["kind"] != "intention"][:8]
         mem_text = "\n".join(f"- {m['subject']}: {m['content']}" for m in mems) or "（还没有记忆）"
 
         platforms = "、".join(settings.get("enabled_platforms", []) or []) or "暂无"
@@ -174,6 +186,7 @@ class Life:
             f"最近发生的事：\n{recent_text}",
             "",
             f"你还记得的：\n{mem_text}",
+            self._pending_context(settings),
             "",
             f"现在能用的平台：{platforms}。",
             "",

@@ -91,7 +91,32 @@ def get_weather(city):
         text = " ".join(parts)
         if feels is not None and temp is not None and round(feels) != round(temp):
             text += f"（体感 {round(feels)}°C）"
-        _wx_cache[key] = {"ts": now, "text": text}
+        _wx_cache[key] = {"ts": now, "text": text, "code": code}
         return text
     except Exception:
         return None
+
+
+def get_weather_mood(city):
+    """天气对 valence 基线的偏移（-1~1 小值）：阴雨雪雷偏负、晴偏正；拿不到返回 0。"""
+    city = (city or "").strip()
+    if not city:
+        return 0.0
+    try:
+        if get_weather(city) is None:
+            return 0.0
+        lat, lon = _geocode(city)
+        key = (round(lat, 2), round(lon, 2))
+        code = _wx_cache.get(key, {}).get("code")
+        if code is None:
+            return 0.0
+        code = int(code)
+        if code in (51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 71, 73, 75, 77, 80, 81, 82, 85, 86, 95, 96, 99):
+            return -0.08   # 雨雪雷 → 阴郁
+        if code in (2, 3, 4, 5, 45, 48):
+            return -0.03   # 阴雾霾 → 略低
+        if code in (0, 1):
+            return 0.03    # 晴 → 略高
+        return 0.0
+    except Exception:
+        return 0.0

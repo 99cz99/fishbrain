@@ -44,29 +44,37 @@ class _StatusPageState extends State<StatusPage> {
     super.dispose();
   }
 
+  bool _refreshing = false;
+
   Future<void> _refresh() async {
+    if (_refreshing || !mounted) return;
+    _refreshing = true;
     try {
-      final s = await widget.api.status();
-      final logs = await widget.api.logs(limit: 20);
-      Map<String, dynamic>? usage;
       try {
-        usage = await widget.api.usage();
-      } catch (_) {}
-      LifeState? life;
-      try {
-        life = LifeState.fromJson(await widget.api.lifeState());
-      } catch (_) {}
-      if (!mounted) return;
-      setState(() {
-        _status = s;
-        _logs = logs;
-        _usage = usage;
-        _life = life;
-        _connected = true;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _connected = false);
+        final s = await widget.api.status();
+        final logs = await widget.api.logs(limit: 20);
+        Map<String, dynamic>? usage;
+        try {
+          usage = await widget.api.usage();
+        } catch (_) {}
+        LifeState? life;
+        try {
+          life = LifeState.fromJson(await widget.api.lifeState());
+        } catch (_) {}
+        if (!mounted) return;
+        setState(() {
+          _status = s;
+          _logs = logs;
+          _usage = usage;
+          _life = life;
+          _connected = true;
+        });
+      } catch (_) {
+        if (!mounted) return;
+        setState(() => _connected = false);
+      }
+    } finally {
+      _refreshing = false;
     }
   }
 
@@ -122,10 +130,10 @@ class _StatusPageState extends State<StatusPage> {
     );
     await Future.delayed(const Duration(seconds: 3));
     try {
-      await widget.api.qqStart();
-      _snack(ok ? '已启动，QQ 稍等十几秒' : '启动指令发送失败（Termux 装了吗？）');
+      await widget.api.status();
+      _snack(ok ? '鱼脑已启动' : '鱼脑已在线，启动指令未确认');
     } catch (_) {
-      _snack(ok ? '鱼脑已启动（QQ 启动失败）' : '启动指令发送失败（Termux 装了吗？）');
+      _snack('鱼脑启动尚未确认，请检查 Termux 权限和日志');
     }
     _refresh();
     if (mounted) setState(() => _busy = false);
@@ -133,26 +141,38 @@ class _StatusPageState extends State<StatusPage> {
 
   Future<void> _stopFish() async {
     setState(() => _busy = true);
-    await _termux.run(
-      "pkill -f '[s]erver.py'; pkill -f '[r]un-fish.sh'; rm -f /data/data/com.termux/files/home/dfy/.fish.pid",
+    final stopped = await _termux.runAndWait(
+      "pkill -f '[r]un-fish.sh'; pkill -f '[s]erver.py'; rm -f /data/data/com.termux/files/home/dfy/.fish.pid",
+      timeoutMs: 10000,
     );
-    _snack('已停止（QQ 保持在线）');
+    _snack(stopped?.ok == true ? '鱼脑停止命令已完成（QQ 保持在线）' : '停止未获确认');
     _refresh();
     if (mounted) setState(() => _busy = false);
   }
 
   Future<void> _restartFish() async {
     setState(() => _busy = true);
-    await _termux.run(
-      "pkill -f '[s]erver.py'; pkill -f '[r]un-fish.sh'; rm -f /data/data/com.termux/files/home/dfy/.fish.pid",
+    final stopped = await _termux.runAndWait(
+      "pkill -f '[r]un-fish.sh'; pkill -f '[s]erver.py'; rm -f /data/data/com.termux/files/home/dfy/.fish.pid",
+      timeoutMs: 10000,
     );
+    if (stopped?.ok != true) {
+      _snack('停止未获确认，已取消重启');
+      if (mounted) setState(() => _busy = false);
+      return;
+    }
     await Future.delayed(const Duration(seconds: 1));
     await _termux.run(
       'sh /data/data/com.termux/files/home/dfy/run-fish.sh',
       workdir: '/data/data/com.termux/files/home/dfy',
     );
     await Future.delayed(const Duration(seconds: 3));
-    _snack('已重启（QQ 保持在线）');
+    try {
+      await widget.api.status();
+      _snack('鱼脑已重启（QQ 保持在线）');
+    } catch (_) {
+      _snack('启动尚未确认，请检查日志');
+    }
     _refresh();
     if (mounted) setState(() => _busy = false);
   }

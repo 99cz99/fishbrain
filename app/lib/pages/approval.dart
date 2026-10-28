@@ -1,5 +1,6 @@
 // approval.dart — 审批页：待审批请求 + 同意/拒绝
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 
@@ -19,6 +20,7 @@ class ApprovalPage extends StatefulWidget {
 class _ApprovalPageState extends State<ApprovalPage> {
   List<Approval> _pending = [];
   Timer? _timer;
+  final Set<int> _acting = {};
 
   @override
   void initState() {
@@ -33,14 +35,23 @@ class _ApprovalPageState extends State<ApprovalPage> {
     super.dispose();
   }
 
+  bool _refreshing = false;
+
   Future<void> _refresh() async {
+    if (_refreshing || !mounted) return;
+    _refreshing = true;
     try {
-      final p = await widget.api.pendingApprovals();
-      if (mounted) setState(() => _pending = p);
-    } catch (_) {}
+      try {
+        final p = await widget.api.pendingApprovals();
+        if (mounted) setState(() => _pending = p);
+      } catch (_) {}
+    } finally {
+      _refreshing = false;
+    }
   }
 
   Future<void> _act(int id, String action) async {
+    if (!_acting.add(id)) return;
     try {
       if (action == 'approve') {
         await widget.api.approve(id);
@@ -48,7 +59,15 @@ class _ApprovalPageState extends State<ApprovalPage> {
         await widget.api.reject(id);
       }
       _refresh();
-    } catch (_) {}
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('审批未完成: $e')));
+      }
+      _refresh();
+    } finally {
+      _acting.remove(id);
+    }
   }
 
   @override
@@ -79,10 +98,22 @@ class _ApprovalCard extends StatelessWidget {
   const _ApprovalCard({required this.a, required this.onAct});
 
   String _kindLabel(String k) => switch (k) {
+    'friend' => '好友申请',
+    'group' => '加群申请',
     'publish' => '发空间',
     'money' => '花钱',
     _ => k,
   };
+
+  String get _summary {
+    try {
+      final data = jsonDecode(a.summary);
+      if (data is Map && data['summary'] is String) {
+        return data['summary'] as String;
+      }
+    } catch (_) {}
+    return a.summary;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -97,7 +128,7 @@ class _ApprovalCard extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 12),
-        Text(a.summary, style: theme.textTheme.bodyLarge),
+        Text(_summary, style: theme.textTheme.bodyLarge),
         const SizedBox(height: 14),
         Row(
           children: [

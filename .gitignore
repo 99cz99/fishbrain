@@ -1,6 +1,12 @@
 # 凭据 / 运行时数据（不入库）
 fish/config.toml
 fish/*.db
+**/.api-token
+**/*.pre-memory-v2.db
+app/android/key.properties
+*.jks
+*.keystore
+app/android/build/
 *.db
 __pycache__/
 *.pyc

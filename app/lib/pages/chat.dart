@@ -33,11 +33,19 @@ class _ChatPageState extends State<ChatPage> {
     super.dispose();
   }
 
+  bool _refreshing = false;
+
   Future<void> _refresh() async {
+    if (_refreshing || !mounted) return;
+    _refreshing = true;
     try {
-      final c = await widget.api.chat(limit: 200);
-      if (mounted) setState(() => _chat = c);
-    } catch (_) {}
+      try {
+        final c = await widget.api.chat(limit: 200);
+        if (mounted) setState(() => _chat = c);
+      } catch (_) {}
+    } finally {
+      _refreshing = false;
+    }
   }
 
   @override

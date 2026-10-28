@@ -12,19 +12,24 @@ import 'login.dart';
 
 const String _home = '/data/data/com.termux/files/home';
 const String _dfyDir = '$_home/dfy';
+const String _stageDir = '$_dfyDir/.update';
 
 class WizardPage extends StatefulWidget {
   final ApiClient api;
-  const WizardPage({super.key, required this.api});
+  final Future<String> Function(String)? assetLoader;
+  const WizardPage({super.key, required this.api, this.assetLoader});
 
   @override
   State<WizardPage> createState() => _WizardPageState();
 }
 
 class _WizardPageState extends State<WizardPage> {
+  Future<String> _loadAsset(String path) =>
+      widget.assetLoader?.call(path) ?? rootBundle.loadString(path);
   final TermuxRunner _termux = TermuxRunner();
   int _step = 0;
   bool _busy = false;
+  bool _upgrading = false;
   String _msg = '';
   String _log = '';
   double _progress = -1;
@@ -57,6 +62,7 @@ class _WizardPageState extends State<WizardPage> {
   }
 
   void _logLn(String s) {
+    if (!mounted) return;
     setState(() => _log = (_log.isEmpty ? '' : '$_log\n') + s);
   }
 
@@ -167,82 +173,149 @@ class _WizardPageState extends State<WizardPage> {
 
   // ---- Step 1: 装鱼脑 ----
   Future<void> _installFish() async {
-    setState(() => _busy = true);
-    _log = '';
-    _logLn('写入鱼脑代码…');
-    const files = {
-      'server.py': 'assets/fish/server.py',
-      'brain.py': 'assets/fish/brain.py',
-      'memory.py': 'assets/fish/memory.py',
-      'qq_bot.py': 'assets/fish/qq_bot.py',
-      'life.py': 'assets/fish/life.py',
-      'autonomy.py': 'assets/fish/autonomy.py',
-      'heybox.py': 'assets/fish/heybox.py',
-      'weather.py': 'assets/fish/weather.py',
-    };
-    var failed = 0;
-    for (final e in files.entries) {
-      final content = await rootBundle.loadString(e.value);
-      final ok = await _termux.writeFile('$_dfyDir/${e.key}', content);
-      if (!ok) {
-        failed++;
-        _logLn('写入 ${e.key} 失败');
+    try {
+      setState(() => _busy = true);
+      _log = '';
+      final env = await _termux.preflight();
+      if (env?['termuxInstalled'] != true ||
+          env?['runCommandGranted'] != true) {
+        _logLn('请返回环境检查，安装 Termux 并授予命令权限');
+        return;
       }
-    }
-    const cfg =
-        '[qq]\nws_url = "ws://127.0.0.1:8081"\nbackend = "napcat"\n[heybox]\ntoken = ""\n';
-    if (!await _termux.writeFile('$_dfyDir/config.toml', cfg)) {
-      failed++;
-      _logLn('写入 config.toml 失败');
-    }
-    final sh = await rootBundle.loadString('assets/deploy/setup-fish.sh');
-    if (!await _termux.writeFile('$_dfyDir/setup-fish.sh', sh)) {
-      failed++;
-      _logLn('写入 setup-fish.sh 失败');
-    }
-    final rf = await rootBundle.loadString('assets/deploy/run-fish.sh');
-    if (!await _termux.writeFile('$_dfyDir/run-fish.sh', rf)) {
-      failed++;
-      _logLn('写入 run-fish.sh 失败');
-    }
-    if (failed > 0) {
-      _logLn('有文件写入失败：Termux 没装或权限没授（回上一步看「环境检查」）');
-      if (mounted) setState(() => _busy = false);
-      return;
-    }
-
-    _logLn('装 Python 运行环境（首次约 1-3 分钟，别关屏幕）…');
-    final r = await _termux.runAndWait('bash setup-fish.sh', workdir: _dfyDir);
-    if (r == null) {
-      _logLn('命令没跑起来：Termux 没装或权限没授（回上一步看「环境检查」）');
-      if (mounted) setState(() => _busy = false);
-      return;
-    }
-    final combined = [
-      r.stdout,
-      r.stderr,
-    ].where((s) => s.trim().isNotEmpty).join('\n');
-    if (combined.isNotEmpty) _logLn(_tail(combined.trim()));
-    if (!r.ok) {
-      _logLn(
-        '装环境失败（exit ${r.exitCode}）${r.errmsg.isNotEmpty ? '：${r.errmsg}' : ''}',
+      final existing = await _termux.runAndWait(
+        'test -f $_dfyDir/server.py',
+        timeoutMs: 10000,
       );
-      if (mounted) setState(() => _busy = false);
-      return;
-    }
+      if (existing == null) {
+        _logLn('无法检查现有安装，请确认 Termux 已允许外部命令');
+        return;
+      }
+      if (existing.exitCode != 0 && existing.exitCode != 1) {
+        _logLn('现有安装检查失败，未更改代码');
+        return;
+      }
+      _upgrading = existing.ok;
+      _logLn('暂存鱼脑代码，校验通过后再切换…');
+      const files = {
+        'server.py': 'assets/fish/server.py',
+        'brain.py': 'assets/fish/brain.py',
+        'memory.py': 'assets/fish/memory.py',
+        'qq_bot.py': 'assets/fish/qq_bot.py',
+        'delivery.py': 'assets/fish/delivery.py',
+        'memory_system.py': 'assets/fish/memory_system.py',
+        'life.py': 'assets/fish/life.py',
+        'autonomy.py': 'assets/fish/autonomy.py',
+        'heybox.py': 'assets/fish/heybox.py',
+        'weather.py': 'assets/fish/weather.py',
+      };
+      var failed = 0;
+      for (final e in files.entries) {
+        final content = await _loadAsset(e.value);
+        if (!mounted) return;
+        final ok = await _termux.writeFile('$_stageDir/${e.key}', content);
+        if (!ok) {
+          failed++;
+          _logLn('写入 ${e.key} 失败');
+        }
+      }
+      const cfg =
+          '[qq]\nws_url = "ws://127.0.0.1:8081"\nbackend = "napcat"\n[heybox]\ntoken = ""\n';
+      if (!await _termux.writeFile(
+        '$_dfyDir/config.toml',
+        cfg,
+        overwrite: false,
+      )) {
+        failed++;
+        _logLn('写入 config.toml 失败');
+      }
+      final sh = await _loadAsset('assets/deploy/setup-fish.sh');
+      if (!await _termux.writeFile('$_stageDir/setup-fish.sh', sh)) {
+        failed++;
+        _logLn('写入 setup-fish.sh 失败');
+      }
+      final rf = await _loadAsset('assets/deploy/run-fish.sh');
+      if (!await _termux.writeFile('$_stageDir/run-fish.sh', rf)) {
+        failed++;
+        _logLn('写入 run-fish.sh 失败');
+      }
+      if (failed > 0) {
+        _logLn('有文件写入失败：Termux 没装或权限没授（回上一步看「环境检查」）');
+        if (mounted) setState(() => _busy = false);
+        return;
+      }
 
-    _logLn('环境就绪，起鱼脑…');
-    await _termux.run('cd $_dfyDir && sh run-fish.sh', workdir: _dfyDir);
-    await _waitForFish();
-    if (mounted) setState(() => _busy = false);
+      _logLn('装 Python 运行环境（首次约 1-3 分钟，别关屏幕）…');
+      final r = await _termux.runAndWait(
+        'bash setup-fish.sh',
+        workdir: _stageDir,
+      );
+      if (r == null) {
+        _logLn('命令没跑起来：Termux 没装或权限没授（回上一步看「环境检查」）');
+        if (mounted) setState(() => _busy = false);
+        return;
+      }
+      final combined = [
+        r.stdout,
+        r.stderr,
+      ].where((s) => s.trim().isNotEmpty).join('\n');
+      if (combined.isNotEmpty) _logLn(_tail(combined.trim()));
+      if (!r.ok) {
+        _logLn(
+          '装环境失败（exit ${r.exitCode}）${r.errmsg.isNotEmpty ? '：${r.errmsg}' : ''}',
+        );
+        if (mounted) setState(() => _busy = false);
+        return;
+      }
+
+      if (!mounted) return;
+      final checked = await _termux.runAndWait(
+        'python -m py_compile $_stageDir/*.py',
+        timeoutMs: 30000,
+      );
+      if (checked?.ok != true) {
+        _logLn('代码校验失败，现有鱼脑继续运行');
+        return;
+      }
+      _logLn('校验通过，只重启鱼脑，保留 QQ 登录和已有数据…');
+      final stopped = await _termux.runAndWait(
+        "pkill -f '[r]un-fish.sh'; pkill -f '[s]erver.py'; rm -f $_dfyDir/.fish.pid",
+        timeoutMs: 10000,
+      );
+      if (stopped?.ok != true) {
+        _logLn('停止旧进程未获确认，未切换代码');
+        return;
+      }
+      final copied = await _termux.runAndWait(
+        'cp $_stageDir/*.py $_dfyDir/ && cp $_stageDir/setup-fish.sh $_stageDir/run-fish.sh $_dfyDir/',
+        timeoutMs: 30000,
+      );
+      if (copied?.ok != true) {
+        _logLn('切换代码失败，请检查 Termux 文件权限后重试');
+        return;
+      }
+      final started = await _termux.run(
+        'sh $_dfyDir/run-fish.sh',
+        workdir: _dfyDir,
+      );
+      if (!started) {
+        _logLn('启动指令发送失败，请检查 Termux');
+        return;
+      }
+      await _waitForFish();
+      if (mounted) setState(() => _busy = false);
+    } catch (e) {
+      _logLn('安装未完成: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   Future<void> _waitForFish() async {
-    for (var i = 0; i < 90; i++) {
+    for (var i = 0; i < 90 && mounted; i++) {
       try {
         await widget.api.status();
         _logLn('鱼脑已在线 ✅');
-        if (mounted) setState(() => _step = 2);
+        if (mounted) setState(() => _step = _upgrading ? 4 : 2);
         return;
       } catch (_) {}
       await Future.delayed(const Duration(seconds: 2));
@@ -252,52 +325,76 @@ class _WizardPageState extends State<WizardPage> {
 
   // ---- Step 3: 装 QQ ----
   Future<void> _installQq() async {
-    setState(() => _busy = true);
-    _logLn('写部署脚本…');
-    final sh = await rootBundle.loadString('assets/deploy/setup-qq.sh');
-    await _termux.writeFile('$_dfyDir/setup-qq.sh', sh);
-    final onebot = await rootBundle.loadString('assets/deploy/onebot11.json');
-    await _termux.writeFile('$_dfyDir/onebot11.json', onebot);
-
     try {
-      await widget.api.deployQq();
-      _logLn('QQ 环境安装已启动（10-20 分钟，别关屏幕）…');
-      _poll = Timer.periodic(const Duration(seconds: 2), (_) => _pollDeploy());
+      setState(() => _busy = true);
+      _logLn('写部署脚本…');
+      final sh = await _loadAsset('assets/deploy/setup-qq.sh');
+      if (!await _termux.writeFile('$_dfyDir/setup-qq.sh', sh)) {
+        if (mounted) setState(() => _busy = false);
+        _logLn('写入部署脚本失败');
+        return;
+      }
+      final onebot = await _loadAsset('assets/deploy/onebot11.json');
+      if (!await _termux.writeFile('$_dfyDir/onebot11.json', onebot)) {
+        if (mounted) setState(() => _busy = false);
+        _logLn('写入 OneBot 配置失败');
+        return;
+      }
+
+      try {
+        await widget.api.deployQq();
+        _logLn('QQ 环境安装已启动（10-20 分钟，别关屏幕）…');
+        _poll = Timer.periodic(
+          const Duration(seconds: 2),
+          (_) => _pollDeploy(),
+        );
+      } catch (e) {
+        _logLn('启动部署失败：$e');
+        if (mounted) setState(() => _busy = false);
+      }
     } catch (e) {
-      _logLn('启动部署失败：$e');
+      _logLn('QQ 安装未完成: $e');
       if (mounted) setState(() => _busy = false);
     }
   }
 
+  bool _refreshing = false;
+
   Future<void> _pollDeploy() async {
+    if (_refreshing || !mounted) return;
+    _refreshing = true;
     try {
-      final d = await widget.api.deployStatus();
-      final s = (d['status'] as Map?) ?? {};
-      final logs = (d['logs'] as List?) ?? [];
-      if (mounted) {
-        setState(() {
-          _msg = (s['step'] as String?) ?? '';
-          _progress = (s['progress'] as num?)?.toDouble() ?? -1;
-          if (s['running'] == false && s['done'] == true) {
-            _poll?.cancel();
-            _busy = false;
-            _step = 4;
-          } else if (s['running'] == false && s['error'] != null) {
-            _poll?.cancel();
-            _busy = false;
-            _logLn('部署失败：${s['error']}');
-          }
-        });
-      }
-      // 显示最后几行日志
-      final tail = logs
-          .take(6)
-          .map((l) => (l['message'] ?? ''))
-          .toList()
-          .reversed
-          .join('\n');
-      if (mounted && tail.isNotEmpty) setState(() => _log = tail);
-    } catch (_) {}
+      try {
+        final d = await widget.api.deployStatus();
+        final s = (d['status'] as Map?) ?? {};
+        final logs = (d['logs'] as List?) ?? [];
+        if (mounted) {
+          setState(() {
+            _msg = (s['step'] as String?) ?? '';
+            _progress = (s['progress'] as num?)?.toDouble() ?? -1;
+            if (s['running'] == false && s['done'] == true) {
+              _poll?.cancel();
+              _busy = false;
+              _step = 4;
+            } else if (s['running'] == false && s['error'] != null) {
+              _poll?.cancel();
+              _busy = false;
+              _logLn('部署失败：${s['error']}');
+            }
+          });
+        }
+        // 显示最后几行日志
+        final tail = logs
+            .take(6)
+            .map((l) => (l['message'] ?? ''))
+            .toList()
+            .reversed
+            .join('\n');
+        if (mounted && tail.isNotEmpty) setState(() => _log = tail);
+      } catch (_) {}
+    } finally {
+      _refreshing = false;
+    }
   }
 
   @override
@@ -362,7 +459,11 @@ class _WizardPageState extends State<WizardPage> {
           _envCheckCard(),
           const SizedBox(height: 16),
           FilledButton(
-            onPressed: () => setState(() => _step = 1),
+            onPressed:
+                _env?['termuxInstalled'] == true &&
+                    _env?['runCommandGranted'] == true
+                ? () => setState(() => _step = 1)
+                : null,
             child: const Text('我装好 Termux 了'),
           ),
         ];
@@ -370,7 +471,7 @@ class _WizardPageState extends State<WizardPage> {
         return [
           Text('一键装鱼脑', style: Theme.of(context).textTheme.headlineSmall),
           const SizedBox(height: 8),
-          const Text('把鱼脑代码写进 Termux 并启动（需要联网装 Python）。'),
+          const Text('首次安装或更新鱼脑（Android 8.0 及以上）。保留已有配置、记忆、授权信息和 QQ 登录。'),
           const SizedBox(height: 16),
           FilledButton(
             onPressed: _busy ? null : _installFish,
@@ -483,14 +584,21 @@ class _WizardPageState extends State<WizardPage> {
         ];
       default:
         return [
-          Text('扫码登录', style: Theme.of(context).textTheme.headlineSmall),
+          Text(
+            _upgrading ? '鱼脑更新完成' : '扫码登录',
+            style: Theme.of(context).textTheme.headlineSmall,
+          ),
           const SizedBox(height: 8),
-          const Text('QQ 环境已就绪，去扫码登录就能开聊了。'),
+          Text(
+            _upgrading
+                ? '新代码已启动并通过授权连接检查，无需重填模型配置或重装 QQ。'
+                : 'QQ 环境已就绪，去扫码登录就能开聊了。',
+          ),
           const SizedBox(height: 16),
           FilledButton.icon(
-            onPressed: _openLogin,
+            onPressed: _upgrading ? () => Navigator.pop(context) : _openLogin,
             icon: const Icon(Icons.qr_code_scanner),
-            label: const Text('扫码登录 QQ'),
+            label: Text(_upgrading ? '完成' : '扫码登录 QQ'),
           ),
         ];
     }
@@ -531,7 +639,7 @@ class _WizardPageState extends State<WizardPage> {
         'vision_model': '',
         'vision_base_url': '',
       });
-      setState(() => _step = 3);
+      if (mounted) setState(() => _step = 3);
     } catch (_) {
       _logLn('保存 key 失败（鱼脑在线吗？）');
     } finally {

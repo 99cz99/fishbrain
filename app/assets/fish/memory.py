@@ -12,6 +12,8 @@ import sqlite3
 import threading
 import time
 
+from memory_system import MemorySystem
+
 # 软设定默认值（代码只给中性占位，用户在 app 里改）
 DEFAULT_SETTINGS = {
     "name": "",                       # 名字（用户自设，默认空）
@@ -178,12 +180,22 @@ def _overlap(query, content):
     return min(1.0, 0.4 * uni + 0.3 * bi + 0.3 * sub)
 
 
-class Store:
+class Store(MemorySystem):
     def __init__(self, db_path):
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(memories)")}
+        if columns and "status" not in columns and str(db_path) != ":memory:":
+            backup_path = str(db_path) + ".pre-memory-v2.db"
+            if not os.path.exists(backup_path):
+                backup = sqlite3.connect(backup_path)
+                try:
+                    self._conn.backup(backup)
+                finally:
+                    backup.close()
         self._conn.executescript(SCHEMA)
-        self._migrate()
-        self._conn.commit()
+        with self._conn:
+            self._conn.execute("BEGIN")
+            self._migrate()
         self._lock = threading.RLock()  # 可重入：add_memory/update_sticker 持锁时也会调 get_* 读方法
 
     def _migrate(self):
@@ -204,6 +216,7 @@ class Store:
             self._conn.execute("ALTER TABLE memories ADD COLUMN absorbed_by INTEGER")
         if "scope" not in mcols:
             self._conn.execute("ALTER TABLE memories ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'")
+        self._migrate_memory()
         # stickers 补 pinned 列（老库兼容）
         scols = [r[1] for r in self._conn.execute("PRAGMA table_info(stickers)")]
         if scols and "pinned" not in scols:
@@ -286,125 +299,6 @@ class Store:
     def set_life_state(self, d):
         self.set_setting("life_state", d)
 
-    # ---- 长期记忆 ----
-    def add_memory(self, kind, subject, content, platform="", importance=5, scope="global"):
-        with self._lock:
-            # 去重：同 kind+subject+scope 下，与已有记忆太相似就跳过
-            for m in self.get_memories(kind=kind, subject=subject, scope=scope, limit=50):
-                if _similar(m["content"], content):
-                    return None
-            cur = self._conn.execute(
-                "INSERT INTO memories(kind, subject, content, platform, created_at, importance, scope) "
-                "VALUES(?, ?, ?, ?, ?, ?, ?)",
-                (kind, subject, content, platform, _now(), int(importance or 5), scope),
-            )
-            self._conn.commit()
-            self._prune()
-            return cur.lastrowid
-
-    def _prune(self):
-        """上限淘汰：删掉「重要性×最近访问衰减」综合价值最低的（不持有锁，由 add_memory 调用）。"""
-        cnt = self._conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-        if cnt <= MAX_MEMORIES:
-            return
-        now = time.time()
-        rows = self._conn.execute("SELECT id, importance, last_access FROM memories").fetchall()
-
-        def value(row):
-            _, imp, la = row
-            imp_n = (int(imp or 5) or 5) / 10.0
-            la = float(la or 0)
-            if la <= 0:
-                return imp_n * 0.1  # 从没被召回，几乎垫底
-            age = max(0.0, now - la)
-            return imp_n * (2 ** (-age / (7 * 24 * 3600)))  # 7 天半衰
-
-        rows.sort(key=value)
-        for r in rows[:cnt - MAX_MEMORIES]:
-            self._conn.execute("DELETE FROM memories WHERE id = ?", (r[0],))
-
-    def get_memories(self, kind=None, subject=None, platform=None, limit=100, active_only=False, scope=None):
-        with self._lock:
-            q = "SELECT id, kind, subject, content, platform, created_at FROM memories"
-            cond, args = [], []
-            if kind:
-                cond.append("kind = ?"); args.append(kind)
-            if subject:
-                cond.append("subject = ?"); args.append(subject)
-            if platform:
-                cond.append("platform = ?"); args.append(platform)
-            if scope:
-                cond.append("scope = ?"); args.append(scope)
-            if active_only:
-                cond.append("absorbed = 0")
-            if cond:
-                q += " WHERE " + " AND ".join(cond)
-            q += " ORDER BY id DESC LIMIT ?"; args.append(limit)
-            cols = ("id", "kind", "subject", "content", "platform", "created_at")
-            return [dict(zip(cols, r)) for r in self._conn.execute(q, args)]
-
-    def retrieve(self, query, k=8, candidate_limit=None, context_scope=None, speaker=None):
-        """三维召回（recency+relevance+importance），按 context_scope 硬过滤隐私：
-        owner/None → 全量；group:{id} → 本群+global；private:{id} → 本人+global。
-        speaker 传入当前说话人昵称，命中同 subject 的记忆时加实体分（自我指代兜底）。"""
-        with self._lock:
-            now = time.time()
-            cond = "absorbed = 0"
-            args = []
-            if context_scope and context_scope.startswith(("group:", "private:")):
-                cond += " AND scope IN (?, 'global', '')"
-                args.append(context_scope)
-            q = (f"SELECT id, kind, subject, content, importance, last_access, created_at, scope "
-                 f"FROM memories WHERE {cond} ORDER BY id DESC")
-            if candidate_limit:
-                q += " LIMIT ?"
-                args.append(candidate_limit)
-            rows = self._conn.execute(q, args).fetchall()
-            if not rows:
-                return []
-            scored = []
-            for rid, kind, subject, content, importance, last_access, created_at, scope in rows:
-                try:
-                    ts = time.mktime(time.strptime(created_at, "%Y-%m-%d %H:%M:%S"))
-                except Exception:
-                    ts = now
-                age = max(0.0, now - ts)
-                recency = 2 ** (-age / (7 * 24 * 3600))  # 7 天半衰
-                relevance = min(1.0, _overlap(query, content) + 0.3 * _overlap(query, subject))
-                if speaker and subject == speaker:
-                    relevance = min(1.0, relevance + 0.25)
-                imp = (int(importance or 5) or 5) / 10.0
-                score = 0.5 * recency + 3.0 * relevance + 2.0 * imp
-                scored.append((score, rid, kind, subject, content, scope))
-            scored.sort(key=lambda x: -x[0])
-            top = scored[:k]
-            if top:
-                self._conn.execute(
-                    f"UPDATE memories SET last_access = ? WHERE id IN ({','.join('?' * len(top))})",
-                    (now, *[t[1] for t in top]),
-                )
-                self._conn.commit()
-            return [{"id": t[1], "kind": t[2], "subject": t[3], "content": t[4], "scope": t[5]} for t in top]
-
-    def mark_absorbed(self, memory_ids, by_id):
-        with self._lock:
-            for mid in memory_ids:
-                self._conn.execute(
-                    "UPDATE memories SET absorbed = 1, absorbed_by = ? WHERE id = ?", (by_id, mid)
-                )
-            self._conn.commit()
-
-    def delete_memory(self, mid):
-        with self._lock:
-            self._conn.execute("DELETE FROM memories WHERE id = ?", (mid,))
-            self._conn.commit()
-
-    def clear_memories(self):
-        with self._lock:
-            self._conn.execute("DELETE FROM memories")
-            self._conn.commit()
-
-    # ---- 活动 + 聊天日志 ----
     def add_log(self, level, category, message):
         with self._lock:
             self._conn.execute(
@@ -434,6 +328,11 @@ class Store:
                 "INSERT INTO short_term(session, role, content, platform, ts) VALUES(?, ?, ?, ?, ?)",
                 (session, role, content, platform, _now()),
             )
+            self._conn.execute(
+                "DELETE FROM short_term WHERE session=? AND id NOT IN "
+                "(SELECT id FROM short_term WHERE session=? ORDER BY id DESC LIMIT 200)",
+                (session, session),
+            )
             self._conn.commit()
 
     def get_short_term(self, scope=None, limit=20):
@@ -460,12 +359,13 @@ class Store:
 
     # ---- token 用量（累计，存 settings["usage"]） ----
     def add_usage(self, prompt_tokens, completion_tokens):
-        d = self.get_usage()
-        d["prompt_tokens"] += int(prompt_tokens or 0)
-        d["completion_tokens"] += int(completion_tokens or 0)
-        d["total_tokens"] += int(prompt_tokens or 0) + int(completion_tokens or 0)
-        d["calls"] += 1
-        self.set_setting("usage", d)
+        with self._lock:
+            d = self.get_usage()
+            d["prompt_tokens"] += int(prompt_tokens or 0)
+            d["completion_tokens"] += int(completion_tokens or 0)
+            d["total_tokens"] += int(prompt_tokens or 0) + int(completion_tokens or 0)
+            d["calls"] += 1
+            self.set_setting("usage", d)
 
     def get_usage(self):
         d = self.get_settings().get("usage")
@@ -505,6 +405,11 @@ class Store:
             rows = [dict(zip(cols, r)) for r in self._conn.execute(
                 "SELECT id, kind, summary, status, created_at FROM approvals WHERE id = ?", (aid,))]
             return rows[0] if rows else None
+
+    def mark_approval_failed(self, aid):
+        with self._lock:
+            self._conn.execute("UPDATE approvals SET status = 'failed' WHERE id = ?", (aid,))
+            self._conn.commit()
 
     # ---- 表情包库 ----
     def add_sticker(self, tag, path, sha256):
@@ -584,4 +489,5 @@ class Store:
         return None
 
     def close(self):
-        self._conn.close()
+        with self._lock:
+            self._conn.close()

@@ -25,6 +25,7 @@ class MainActivity : FlutterActivity() {
 
     // wait=true 的命令：sessionId -> 待回传的 MethodChannel result
     private val pending = ConcurrentHashMap<String, MethodChannel.Result>()
+    private val timeouts = ConcurrentHashMap<String, Runnable>()
     private val reqCode = AtomicInteger(1)
     private val mainHandler = Handler(Looper.getMainLooper())
     private var resultReceiver: BroadcastReceiver? = null
@@ -47,9 +48,9 @@ class MainActivity : FlutterActivity() {
         resultReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 val sessionId = intent.getStringExtra(EXTRA_SESSION_ID)
-                Log.i("DFY_TERMUX", "onReceive session=$sessionId action=${intent.action} extras=${intent.extras}")
                 if (sessionId == null) return
                 val result = pending.remove(sessionId) ?: return
+                timeouts.remove(sessionId)?.let { mainHandler.removeCallbacks(it) }
                 val bundle = intent.getBundleExtra(RESULT_BUNDLE)
                 Log.i("DFY_TERMUX", "onReceive session=$sessionId hasResultBundle=${bundle != null}")
                 val out = mutableMapOf<String, Any?>()
@@ -77,6 +78,10 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        timeouts.values.forEach { mainHandler.removeCallbacks(it) }
+        timeouts.clear()
+        pending.values.forEach { runCatching { it.error("DESTROYED", "Activity destroyed", null) } }
+        pending.clear()
         resultReceiver?.let { runCatching { unregisterReceiver(it) } }
         resultReceiver = null
         super.onDestroy()
@@ -158,15 +163,19 @@ class MainActivity : FlutterActivity() {
         val sessionId = UUID.randomUUID().toString()
         Log.i("DFY_TERMUX", "runAndWait session=$sessionId timeoutMs=$timeoutMs cmd=${command.take(60)}")
         pending[sessionId] = result
-        mainHandler.postDelayed({
+        val timeout = Runnable {
+            timeouts.remove(sessionId)
             val r = pending.remove(sessionId)
             Log.w("DFY_TERMUX", "TIMEOUT session=$sessionId stillPending=${r != null}")
             r?.error("TIMEOUT", "命令超时（${timeoutMs / 1000} 秒）", null)
-        }, timeoutMs)
+        }
+        timeouts[sessionId] = timeout
+        mainHandler.postDelayed(timeout, timeoutMs)
         try {
             startForegroundService(buildIntent(command, workdir, sessionId))
         } catch (e: Exception) {
             pending.remove(sessionId)
+            timeouts.remove(sessionId)?.let { mainHandler.removeCallbacks(it) }
             Log.w("DFY_TERMUX", "START_FAILED session=$sessionId err=${e.message}")
             result.error("START_FAILED", e.message, null)
         }

@@ -1,11 +1,12 @@
 # life.py — Fishbrain 的「心」：心跳循环，让 LLM 自由决定想干嘛
 # 核心思想：代码不做决定，只喂「当下」+ 问一句；LLM 自由回答（包括发呆 action=nothing）。
-# 心情 = 文字标签 + valence/arousal 数值（读时按指数衰减回基线）；下次醒来的间隔由它自己定。
+# 心情 = valence/arousal/dominance 三维数值（读时按指数衰减回基线，mood 标签由数值派生）；下次醒来的间隔由它自己定。
 import json
+import math
 import time
 
 import weather
-from memory import render_self_profile
+from memory import render_self_profile, format_memory_line, mood_param, MEMORY_EMOTION_NUDGE_K, MEMORY_EMOTION_NUDGE_CAP
 
 # 下次心跳间隔的软边界（分钟）：防它永睡或刷屏。这是安全护栏，不是「闹钟」。
 MIN_NEXT_MIN = 10
@@ -43,12 +44,14 @@ class Life:
             "mood": d.get("mood", ""),
             "valence": d.get("valence", 0.0),
             "arousal": d.get("arousal", 0.0),
+            "dominance": d.get("dominance", 0.0),
+            "attribution": d.get("attribution", 0.0),
             "next_wake_at": d.get("next_wake_at", 0.0),
             "last_wake_at": d.get("last_wake_at", 0.0),
         }
 
     def _save(self, next_wake_at, last_wake_at, mood_update=None):
-        # 只在 mood_update 有值时写 mood/valence/arousal/mood_at；否则保留原值（衰减只读时算、不落盘）
+        # 只在 mood_update 有值时写 valence/arousal/dominance/mood_at；否则保留原值（衰减只读时算、不落盘）
         raw = self.store.get_settings().get("life_state") or {}
         d = dict(raw)
         d["next_wake_at"] = next_wake_at
@@ -70,10 +73,31 @@ class Life:
         """第一段：定心情 + 本能（drive）+ 下次醒来时间。返回 {mood, drive, next_wake}。"""
         now = time.time()
         st = self.state()
+        # 情感传染：回忆情绪明显的记忆，对当前 valence 做一次轻微 nudge
+        mems = [m for m in self.store.get_memories(limit=20) if m["kind"] != "intention"]
+        mp_settings = self.store.get_settings()
+        nudge_k = mood_param(mp_settings, "emotion_nudge_k", MEMORY_EMOTION_NUDGE_K)
+        nudge_cap = mood_param(mp_settings, "emotion_nudge_cap", MEMORY_EMOTION_NUDGE_CAP)
+        contagion = sum(
+            float(m.get("emotion", 0) or 0) * (float(m.get("importance", 5) or 5) / 10.0)
+            * math.exp(-max(0.0, now - float(m.get("occurred_at", now) or now)) / 86400.0)
+            for m in mems if abs(float(m.get("emotion", 0) or 0)) >= 0.3
+        ) * nudge_k
+        contagion = max(-nudge_cap, min(nudge_cap, contagion))
+        if contagion:
+            new_valence = max(-1.0, min(1.0, float(st.get("valence", 0.0)) + contagion))
+            raw = self.store.get_settings().get("life_state") or {}
+            d = dict(raw) if isinstance(raw, dict) else {}
+            d["valence"] = new_valence
+            d["mood_at"] = now
+            self.store.set_life_state(d)
+            st = self.state()
         last_mood = st.get("mood", "")
         mood = last_mood
         valence = st.get("valence", 0.0)
         arousal = st.get("arousal", 0.0)
+        dominance = st.get("dominance", 0.0)
+        attribution = st.get("attribution", 0.0)
         mood_update = None
         drive = "none"
         nxt = 60
@@ -86,7 +110,6 @@ class Life:
                 name = tc.get("name")
                 args = tc.get("arguments", {}) or {}
                 if name == "update_mood":
-                    label = str(args.get("mood", "") or "").strip()
                     if "valence" in args and args["valence"] is not None:
                         try:
                             valence = max(-1.0, min(1.0, float(args["valence"])))
@@ -97,8 +120,17 @@ class Life:
                             arousal = max(0.0, min(1.0, float(args["arousal"])))
                         except (TypeError, ValueError):
                             pass
-                    mood = label or last_mood
-                    mood_update = {"mood": mood, "valence": valence, "arousal": arousal, "mood_at": now}
+                    if "dominance" in args and args["dominance"] is not None:
+                        try:
+                            dominance = max(-1.0, min(1.0, float(args["dominance"])))
+                        except (TypeError, ValueError):
+                            pass
+                    if "attribution" in args and args["attribution"] is not None:
+                        try:
+                            attribution = max(-1.0, min(1.0, float(args["attribution"])))
+                        except (TypeError, ValueError):
+                            pass
+                    mood_update = {"valence": valence, "arousal": arousal, "dominance": dominance, "attribution": attribution, "mood_at": now}
                 elif name == "schedule_next_wake":
                     try:
                         nxt = int(args.get("minutes"))
@@ -113,6 +145,8 @@ class Life:
 
         next_wake_at = now + nxt * 60
         self._save(next_wake_at, now, mood_update)
+        if mood_update:
+            mood = self.store.get_life_state().get("mood", mood)
         return {"mood": mood, "drive": drive, "next_wake": nxt}
 
     def decide_action(self, drive, tools, extra_context=None):
@@ -135,10 +169,21 @@ class Life:
         if sp_text:
             lines.append(sp_text)
         lines.append(f"你现在偏向「{drive}」这个天性面。")
+        lines.append(self._pending_context(settings))
         if extra_context:
             lines.append(str(extra_context))
         lines.append("用工具做一件具体的事吧（也可以什么都不做，那就不调工具）。")
         return "\n".join(lines)
+
+    def _pending_context(self, settings):
+        owner = str(settings.get("owner_qq", "") or "").strip()
+        if not owner:
+            return ""
+        rows = self.store.due_intentions(f"qq:{owner}")
+        if not rows:
+            return ""
+        return ("可考虑跟进的主人未完事项（不是必须联系；尊重静默与最近互动，跟进时send_message必须带intention_id）：\n"
+                + "\n".join(f"intention_id={r['id']}：{r['content']}" for r in rows))
 
     # ---- 拼「当下」 ----
     def _prompt(self, settings, st):
@@ -149,16 +194,21 @@ class Life:
 
         since_wake = _fmt_elapsed(now - last_wake) if last_wake else "（第一次醒来）"
 
-        recent = self.store.get_logs(limit=8)
+        # Chat/action logs are diagnostics, not evidence: deletion must remove their influence.
+        recent = self.store.get_logs("status", limit=8)
         recent_text = "\n".join(f"- [{r['ts']}] {r['message']}" for r in recent) or "（还没有发生过什么）"
 
-        mems = self.store.get_memories(limit=8)
-        mem_text = "\n".join(f"- {m['subject']}: {m['content']}" for m in mems) or "（还没有记忆）"
+        mems = [m for m in self.store.get_memories(limit=20) if m["kind"] != "intention"][:8]
+        mem_text = "\n".join(format_memory_line(m) for m in mems) or "（还没有记忆）"
 
         platforms = "、".join(settings.get("enabled_platforms", []) or []) or "暂无"
 
         intro = f"你是「{name}」。" if name else "你是一个活着的智能体。"
         mood_line = f"你上次的心情是「{last_mood}」（心情会随时间自然平复）。可以延续它，也可以变了。" if last_mood else "这是你第一次醒来。"
+        mood_num = (f"你此刻的心情数值：valence={st.get('valence', 0):.2f}(愉悦度)、"
+                    f"arousal={st.get('arousal', 0):.2f}(唤醒度)、dominance={st.get('dominance', 0):.2f}(掌控感)、attribution={st.get('attribution', 0):.2f}(归因)。"
+                    f"心情会影响你此刻偏向的天性面：valence 低→更想「陪伴/被安慰」；valence 高→更想「表达/分享」；"
+                    f"arousal 高→更想「玩耍/好奇」；dominance 低→更想「陪伴/寻求支持」；也可以违背心情。")
         weather_text = weather.get_weather(settings.get("city", ""))
         weather_part = f"现在的天气：{weather_text}。" if weather_text else ""
         sp_text = render_self_profile(settings.get("self_profile"))
@@ -168,12 +218,14 @@ class Life:
             sp_text,
             f"现在是 {_now_str()}。{weather_part}",
             f"距离你上次醒来已经 {since_wake}。{mood_line}",
+            mood_num,
             "",
             "你的性子（背景，不是指令）：关系层=陪伴/被需要/亲密；自我层=表达/情绪/自我；探索层=好奇/创造/玩耍；存在层=生存/成长/意义。",
             "",
             f"最近发生的事：\n{recent_text}",
             "",
             f"你还记得的：\n{mem_text}",
+            self._pending_context(settings),
             "",
             f"现在能用的平台：{platforms}。",
             "",
@@ -189,12 +241,13 @@ class Life:
         """第一段（本能）工具：心情 + 本能面 + 下次醒来。"""
         return [
             {"type": "function", "function": {
-                "name": "update_mood", "description": "更新心情：mood 是一句简短描述（如「平静」「有点低落」），valence 是愉悦度 -1(难过)到 1(开心)，arousal 是唤醒度 0(平静)到 1(兴奋)。",
+                "name": "update_mood", "description": "更新心情：valence 是愉悦度 -1(难过)到 1(开心)，arousal 是唤醒度 0(平静)到 1(兴奋)，dominance 是掌控感 -1(无力/顺从)到 1(掌控/有力)，attribution 是归因 -1(外界/他人导致)到 1(自己导致)。",
                 "parameters": {"type": "object", "properties": {
-                    "mood": {"type": "string", "description": "心情的简短描述"},
                     "valence": {"type": "number", "description": "愉悦度 -1 到 1"},
                     "arousal": {"type": "number", "description": "唤醒度 0 到 1"},
-                }, "required": ["mood", "valence", "arousal"]},
+                    "dominance": {"type": "number", "description": "掌控感 -1(无力/顺从)到 1(掌控/有力)"},
+                    "attribution": {"type": "number", "description": "归因 -1(外界/他人导致)到 1(自己导致)"},
+                }, "required": ["valence", "arousal", "dominance", "attribution"]},
             }},
             {"type": "function", "function": {
                 "name": "schedule_next_wake", "description": "定你下次醒来想一下的时间。",

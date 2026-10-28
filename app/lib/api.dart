@@ -1,38 +1,93 @@
 // api.dart — 连鱼脑本地 API（dart:io HttpClient，零外部依赖）
 import 'dart:convert';
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
 import 'models.dart';
+import 'termux.dart';
 
 class ApiClient {
   final String base;
   final HttpClient _http = HttpClient();
+  String? _token;
+  Future<String?>? _loadingToken;
+  static const requestTimeout = Duration(seconds: 20);
 
-  ApiClient({this.base = 'http://127.0.0.1:8765'});
+  Future<String?> _readToken() async {
+    final result = await TermuxRunner().runAndWait(
+      'cat /data/data/com.termux/files/home/dfy/.api-token',
+      timeoutMs: 5000,
+    );
+    return result?.ok == true ? result!.stdout.trim() : null;
+  }
+
+  Future<String?> _authorization() async {
+    if (_token?.isNotEmpty == true) return _token;
+    _loadingToken ??= _readToken();
+    try {
+      return _token = await _loadingToken;
+    } finally {
+      _loadingToken = null;
+    }
+  }
+
+  void close() => _http.close(force: true);
+
+  ApiClient({this.base = 'http://127.0.0.1:8765'}) {
+    _http.connectionTimeout = requestTimeout;
+  }
 
   Future<dynamic> _request(String method, String path, {Object? body}) async {
     final uri = Uri.parse('$base$path');
-    final req = await _http.openUrl(method, uri);
+    final token = await _authorization();
+    final req = await _http.openUrl(method, uri).timeout(requestTimeout);
+    if (token?.isNotEmpty == true) {
+      req.headers.set('Authorization', 'Bearer $token');
+    }
     req.headers.set('Content-Type', 'application/json');
     if (body != null) {
       final bytes = utf8.encode(jsonEncode(body));
-      req.contentLength = bytes.length; // 显式设 Content-Length，避免 chunked 导致服务端读不到 body
+      req.contentLength =
+          bytes.length; // 显式设 Content-Length，避免 chunked 导致服务端读不到 body
       req.add(bytes);
     }
-    final resp = await req.close();
-    final text = await resp.transform(utf8.decoder).join();
+    final resp = await req.close().timeout(
+      requestTimeout,
+      onTimeout: () {
+        req.abort();
+        throw TimeoutException('请求超时');
+      },
+    );
+    final text = await resp
+        .transform(utf8.decoder)
+        .join()
+        .timeout(
+          requestTimeout,
+          onTimeout: () {
+            req.abort();
+            throw TimeoutException('读取响应超时');
+          },
+        );
+    if (resp.statusCode == 401) _token = null;
     if (resp.statusCode >= 400) {
       throw Exception('HTTP ${resp.statusCode}: $text');
     }
-    return text.isEmpty ? null : jsonDecode(text);
+    final result = text.isEmpty ? null : jsonDecode(text);
+    if (result is Map && (result['ok'] == false || result['error'] != null)) {
+      throw Exception(result['error'] ?? '操作未获确认');
+    }
+    return result;
   }
 
   Future<Status> status() async =>
       Status.fromJson(await _request('GET', '/status') as Map<String, dynamic>);
 
   Future<List<LogEntry>> logs({String? category, int limit = 100}) async {
-    final q = [if (category != null) 'category=$category', 'limit=$limit'].join('&');
+    final q = [
+      if (category != null) 'category=$category',
+      'limit=$limit',
+    ].join('&');
     final j = await _request('GET', '/logs?$q') as Map<String, dynamic>;
     return (j['logs'] as List)
         .map((e) => LogEntry.fromJson(e as Map<String, dynamic>))
@@ -40,19 +95,28 @@ class ApiClient {
   }
 
   Future<List<LogEntry>> chat({int limit = 200}) async {
-    final j = await _request('GET', '/chat?limit=$limit') as Map<String, dynamic>;
+    final j =
+        await _request('GET', '/chat?limit=$limit') as Map<String, dynamic>;
     return (j['chat'] as List)
         .map((e) => LogEntry.fromJson(e as Map<String, dynamic>))
         .toList();
   }
 
-  Future<List<Memory>> memories({String? kind, String? subject, String? platform}) async {
+  Future<List<Memory>> memories({
+    String? kind,
+    String? subject,
+    String? platform,
+    int offset = 0,
+  }) async {
     final q = [
-      if (kind != null) 'kind=$kind',
-      if (subject != null) 'subject=$subject',
-      if (platform != null) 'platform=$platform',
+      if (kind != null) 'kind=${Uri.encodeQueryComponent(kind)}',
+      if (subject != null) 'subject=${Uri.encodeQueryComponent(subject)}',
+      if (platform != null) 'platform=${Uri.encodeQueryComponent(platform)}',
     ].join('&');
-    final j = await _request('GET', '/memories${q.isEmpty ? '' : '?$q'}') as Map<String, dynamic>;
+    final j = await _request(
+      'GET',
+      '/memories?limit=1000&offset=$offset${q.isEmpty ? '' : '&$q'}',
+    ) as Map<String, dynamic>;
     return (j['memories'] as List)
         .map((e) => Memory.fromJson(e as Map<String, dynamic>))
         .toList();
@@ -60,6 +124,10 @@ class ApiClient {
 
   Future<void> deleteMemory(int id) async {
     await _request('DELETE', '/memories/$id');
+  }
+
+  Future<void> updateMemory(int id, Map<String, dynamic> changes) async {
+    await _request('PUT', '/memories/$id', body: changes);
   }
 
   Future<Map<String, dynamic>> settings() async =>
@@ -114,7 +182,8 @@ class ApiClient {
       await _request('POST', '/heybox/sign') as Map<String, dynamic>;
 
   Future<Map<String, dynamic>> setHeyboxToken(String token) async =>
-      await _request('PUT', '/heybox', body: {'token': token}) as Map<String, dynamic>;
+      await _request('PUT', '/heybox', body: {'token': token})
+          as Map<String, dynamic>;
 
   Future<Map<String, dynamic>> lifeState() async =>
       await _request('GET', '/life/state') as Map<String, dynamic>;
@@ -124,52 +193,76 @@ class ApiClient {
 
   // 拉 NapCat 登录二维码（返回 PNG 字节）
   Future<Uint8List> qrcode() async {
-    final uri = Uri.parse('$base/qrcode');
-    final req = await _http.openUrl('GET', uri);
-    final resp = await req.close();
+    return _image('/qrcode');
+  }
+
+  Future<Uint8List> _image(String path) async {
+    final token = await _authorization();
+    final req = await _http
+        .getUrl(Uri.parse('$base$path'))
+        .timeout(requestTimeout);
+    if (token?.isNotEmpty == true) {
+      req.headers.set('Authorization', 'Bearer $token');
+    }
+    final resp = await req.close().timeout(
+      requestTimeout,
+      onTimeout: () {
+        req.abort();
+        throw TimeoutException('图片请求超时');
+      },
+    );
     if (resp.statusCode != 200) {
+      await resp.drain<void>().timeout(requestTimeout);
+      if (resp.statusCode == 401) _token = null;
       throw Exception('HTTP ${resp.statusCode}');
     }
-    final bytes = <int>[];
-    await for (final chunk in resp) {
-      bytes.addAll(chunk);
-    }
-    return Uint8List.fromList(bytes);
+    final bytes = await resp
+        .fold<BytesBuilder>(BytesBuilder(), (b, chunk) => b..add(chunk))
+        .timeout(
+          requestTimeout,
+          onTimeout: () {
+            req.abort();
+            throw TimeoutException('读取图片超时');
+          },
+        );
+    return bytes.takeBytes();
   }
 
   // ---- 表情包管理 ----
   Future<List<Map<String, dynamic>>> stickers() async {
     final j = await _request('GET', '/stickers') as Map<String, dynamic>;
-    return (j['stickers'] as List).map((e) => e as Map<String, dynamic>).toList();
+    return (j['stickers'] as List)
+        .map((e) => e as Map<String, dynamic>)
+        .toList();
   }
 
   Future<Uint8List> stickerImage(int id) async {
-    final uri = Uri.parse('$base/stickers/$id/image');
-    final req = await _http.openUrl('GET', uri);
-    final resp = await req.close();
-    if (resp.statusCode != 200) {
-      throw Exception('HTTP ${resp.statusCode}');
-    }
-    final bytes = <int>[];
-    await for (final chunk in resp) {
-      bytes.addAll(chunk);
-    }
-    return Uint8List.fromList(bytes);
+    return _image('/stickers/$id/image');
   }
 
-  Future<Map<String, dynamic>> addSticker(
-      {String? base64, String? url, String ext = 'gif', required String tag}) async {
+  Future<Map<String, dynamic>> addSticker({
+    String? base64,
+    String? url,
+    String ext = 'gif',
+    required String tag,
+  }) async {
     final body = <String, dynamic>{'tag': tag, 'ext': ext};
     if (base64 != null) body['base64'] = base64;
     if (url != null) body['url'] = url;
-    return await _request('POST', '/stickers', body: body) as Map<String, dynamic>;
+    return await _request('POST', '/stickers', body: body)
+        as Map<String, dynamic>;
   }
 
-  Future<Map<String, dynamic>> updateSticker(int id, {String? tag, bool? pinned}) async {
+  Future<Map<String, dynamic>> updateSticker(
+    int id, {
+    String? tag,
+    bool? pinned,
+  }) async {
     final body = <String, dynamic>{};
     if (tag != null) body['tag'] = tag;
     if (pinned != null) body['pinned'] = pinned;
-    return await _request('PUT', '/stickers/$id', body: body) as Map<String, dynamic>;
+    return await _request('PUT', '/stickers/$id', body: body)
+        as Map<String, dynamic>;
   }
 
   Future<void> deleteSticker(int id) async {
@@ -177,7 +270,8 @@ class ApiClient {
   }
 
   Future<List<Approval>> pendingApprovals() async {
-    final j = await _request('GET', '/approval/pending') as Map<String, dynamic>;
+    final j =
+        await _request('GET', '/approval/pending') as Map<String, dynamic>;
     return (j['pending'] as List)
         .map((e) => Approval.fromJson(e as Map<String, dynamic>))
         .toList();
@@ -192,8 +286,11 @@ class ApiClient {
   }
 
   Future<String> command(String cmd, [List<String> args = const []]) async {
-    final j = await _request('POST', '/command',
-        body: {'command': cmd, 'args': args}) as Map<String, dynamic>;
+    final j = await _request(
+      'POST',
+      '/command',
+      body: {'command': cmd, 'args': args},
+    ) as Map<String, dynamic>;
     return j['message'] as String? ?? '';
   }
 }

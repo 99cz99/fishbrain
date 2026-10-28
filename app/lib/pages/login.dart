@@ -41,129 +41,137 @@ class _LoginPageState extends State<LoginPage> {
     super.dispose();
   }
 
+  bool _refreshing = false;
+
   Future<void> _tick() async {
-    bool running = false;
-    bool qr = false;
-    bool online = false;
-    bool stale = false;
-    String loginReason = 'unknown';
+    if (_refreshing || !mounted) return;
+    _refreshing = true;
     try {
-      final q = await widget.api.qqStatus();
-      running = q['running'] == true;
-      qr = q['qr'] == true;
-      online = q['online'] == true;
-      stale = q['stale'] == true;
-      loginReason = (q['login_reason'] as String?) ?? 'unknown';
-      _qrAge = (q['qr_age'] as num?)?.toInt() ?? -1;
-      _quickLoginConfigured = q['quick_login_configured'] == true;
-      _selfHealing = q['self_healing'] == true;
-      final loginUin = (q['login_uin'] as String?) ?? '';
-      // 扫码登录成功（NapCat 已生成 onebot11_<uin>.json）但 OneBot WS 还没连上 → 写配置 + 重启 QQ
-      if (loginUin.isNotEmpty && !online && !_appliedOnebot) {
-        _appliedOnebot = true;
-        _configuring = true;
-        _configuringAt = DateTime.now().millisecondsSinceEpoch;
-        _applyOnebot();
+      bool running = false;
+      bool qr = false;
+      bool online = false;
+      bool stale = false;
+      String loginReason = 'unknown';
+      try {
+        final q = await widget.api.qqStatus();
+        running = q['running'] == true;
+        qr = q['qr'] == true;
+        online = q['online'] == true;
+        stale = q['stale'] == true;
+        loginReason = (q['login_reason'] as String?) ?? 'unknown';
+        _qrAge = (q['qr_age'] as num?)?.toInt() ?? -1;
+        _quickLoginConfigured = q['quick_login_configured'] == true;
+        _selfHealing = q['self_healing'] == true;
+        final loginUin = (q['login_uin'] as String?) ?? '';
+        // 扫码登录成功（NapCat 已生成 onebot11_<uin>.json）但 OneBot WS 还没连上 → 写配置 + 重启 QQ
+        if (loginUin.isNotEmpty && !online && !_appliedOnebot) {
+          _appliedOnebot = true;
+          _configuring = true;
+          _configuringAt = DateTime.now().millisecondsSinceEpoch;
+          _applyOnebot();
+        }
+        if (online || qr) {
+          _configuring = false; // 重启完成：已在线或已出码
+        }
+      } catch (_) {
+        if (mounted) {
+          setState(() {
+            _loading = false;
+            _qr = null;
+            _loggedIn = false;
+            _error = '连不上鱼脑（先回「部署」页启动鱼脑和 QQ）';
+          });
+        }
+        return;
       }
-      if (online || qr) {
-        _configuring = false; // 重启完成：已在线或已出码
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _qr = null;
-          _loggedIn = false;
-          _error = '连不上鱼脑（先回「部署」页启动鱼脑和 QQ）';
-        });
-      }
-      return;
-    }
 
-    if (online) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _qr = null;
-          _loggedIn = true;
-          _error = '';
-        });
+      if (online) {
+        if (mounted) {
+          setState(() {
+            _loading = false;
+            _qr = null;
+            _loggedIn = true;
+            _error = '';
+          });
+        }
+        if (!_appliedOnebot) {
+          _appliedOnebot = true;
+          _applyOnebot();
+        }
+        return;
       }
-      if (!_appliedOnebot) {
-        _appliedOnebot = true;
-        _applyOnebot();
-      }
-      return;
-    }
 
-    if (_configuring &&
-        DateTime.now().millisecondsSinceEpoch - _configuringAt > 90000) {
-      _configuring = false; // 重启超时（约 90s），透出真实状态而非永久卡在「配置中」
-    }
-    if (_configuring) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _qr = null;
-          _loggedIn = false;
-          _error = 'QQ 已登录，正在写入 OneBot 配置并重启 QQ，请稍候（约 1 分钟）…';
-        });
+      if (_configuring &&
+          DateTime.now().millisecondsSinceEpoch - _configuringAt > 90000) {
+        _configuring = false; // 重启超时（约 90s），透出真实状态而非永久卡在「配置中」
       }
-      return;
-    }
+      if (_configuring) {
+        if (mounted) {
+          setState(() {
+            _loading = false;
+            _qr = null;
+            _loggedIn = false;
+            _error = 'QQ 已登录，正在写入 OneBot 配置并重启 QQ，请稍候（约 1 分钟）…';
+          });
+        }
+        return;
+      }
 
-    if (!running) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _qr = null;
-          _loggedIn = false;
-          _error = 'QQ 还没启动';
-        });
+      if (!running) {
+        if (mounted) {
+          setState(() {
+            _loading = false;
+            _qr = null;
+            _loggedIn = false;
+            _error = 'QQ 还没启动';
+          });
+        }
+        return;
       }
-      return;
-    }
 
-    if (!qr) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _qr = null;
-          _loggedIn = false;
-          if (stale) {
-            _error = _selfHealing
-                ? 'QQ 掉线，正在快捷登录自愈…'
-                : (_quickLoginConfigured
-                      ? 'QQ 掉线（${_reasonLabel(loginReason)}），正在尝试快捷登录自愈…'
-                      : 'QQ 掉线（${_reasonLabel(loginReason)}），鱼脑会自动重连/出码，请稍候');
-          } else {
-            _error = _qrAge >= 0
-                ? '二维码已过期（$_qrAge 秒前生成），点「重新出码」换个新的'
-                : 'QQ 运行中，还没出二维码，稍等…';
-          }
-        });
+      if (!qr) {
+        if (mounted) {
+          setState(() {
+            _loading = false;
+            _qr = null;
+            _loggedIn = false;
+            if (stale) {
+              _error = _selfHealing
+                  ? 'QQ 掉线，正在快捷登录自愈…'
+                  : (_quickLoginConfigured
+                        ? 'QQ 掉线（${_reasonLabel(loginReason)}），正在尝试快捷登录自愈…'
+                        : 'QQ 掉线（${_reasonLabel(loginReason)}），鱼脑会自动重连/出码，请稍候');
+            } else {
+              _error = _qrAge >= 0
+                  ? '二维码已过期（$_qrAge 秒前生成），点「重新出码」换个新的'
+                  : 'QQ 运行中，还没出二维码，稍等…';
+            }
+          });
+        }
+        return;
       }
-      return;
-    }
 
-    try {
-      final bytes = await widget.api.qrcode();
-      if (mounted) {
-        setState(() {
-          _qr = bytes;
-          _loading = false;
-          _loggedIn = false;
-          _error = '';
-        });
+      try {
+        final bytes = await widget.api.qrcode();
+        if (mounted) {
+          setState(() {
+            _qr = bytes;
+            _loading = false;
+            _loggedIn = false;
+            _error = '';
+          });
+        }
+      } catch (_) {
+        if (mounted) {
+          setState(() {
+            _loading = false;
+            _qr = null;
+            _error = '读不到二维码（NapCat 还没生成，稍等重试）';
+          });
+        }
       }
-    } catch (_) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _qr = null;
-          _error = '读不到二维码（NapCat 还没生成，稍等重试）';
-        });
-      }
+    } finally {
+      _refreshing = false;
     }
   }
 

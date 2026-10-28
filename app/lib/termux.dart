@@ -39,15 +39,21 @@ class TermuxRunner {
 
   /// 等命令跑完，回传 stdout/stderr/exitCode。命令失败或 Termux 未装返回 null。
   /// [timeoutMs] 超时（默认 30 分钟，装环境等长命令用；写文件等秒级命令传小值）。
-  Future<TermuxResult?> runAndWait(String command,
-      {String? workdir, int? timeoutMs}) async {
+  Future<TermuxResult?> runAndWait(
+    String command, {
+    String? workdir,
+    int? timeoutMs,
+  }) async {
     try {
-      final m = await _channel.invokeMethod<Map<dynamic, dynamic>>('runCommand', {
-        'command': command,
-        'workdir': workdir,
-        'wait': true,
-        'timeoutMs': timeoutMs,
-      });
+      final m = await _channel.invokeMethod<Map<dynamic, dynamic>>(
+        'runCommand',
+        {
+          'command': command,
+          'workdir': workdir,
+          'wait': true,
+          'timeoutMs': timeoutMs,
+        },
+      );
       if (m == null) return null;
       return TermuxResult(
         exitCode: (m['exitCode'] as num?)?.toInt() ?? -1,
@@ -62,11 +68,17 @@ class TermuxRunner {
 
   /// 把 [content] 写到 Termux 里的 [path]（base64 中转，规避 shell 转义）。
   /// 返回是否写成功（命令 exitCode == 0）。
-  Future<bool> writeFile(String path, String content) async {
+  Future<bool> writeFile(
+    String path,
+    String content, {
+    bool overwrite = true,
+  }) async {
     final b64 = base64Encode(utf8.encode(content));
-    final dir = path.contains('/') ? path.substring(0, path.lastIndexOf('/')) : '.';
+    final dir = path.contains('/')
+        ? path.substring(0, path.lastIndexOf('/'))
+        : '.';
     final r = await runAndWait(
-      'mkdir -p "$dir" && echo "$b64" | base64 -d > "$path"',
+      'mkdir -p "$dir" && ${overwrite ? '' : 'if [ ! -e "$path" ]; then '}echo "$b64" | base64 -d > "$path"${overwrite ? '' : '; fi'}',
       timeoutMs: 30000,
     );
     return r?.ok ?? false;

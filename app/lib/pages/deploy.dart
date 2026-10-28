@@ -44,43 +44,51 @@ class _DeployPageState extends State<DeployPage> {
     super.dispose();
   }
 
+  bool _refreshing = false;
+
   Future<void> _refresh() async {
-    var fishUp = false;
-    var qqRunning = false;
-    var qqQr = false;
-    var qqOnline = false;
-    var qqStale = false;
-    var loginReason = 'unknown';
-    var qqAutoCircuit = false;
-    var heyboxEnabled = false;
+    if (_refreshing || !mounted) return;
+    _refreshing = true;
     try {
-      await widget.api.status();
-      fishUp = true;
-    } catch (_) {}
-    try {
-      final q = await widget.api.qqStatus();
-      qqRunning = q['running'] == true;
-      qqQr = q['qr'] == true;
-      qqOnline = q['online'] == true;
-      qqStale = q['stale'] == true;
-      loginReason = (q['login_reason'] as String?) ?? 'unknown';
-      qqAutoCircuit = q['auto_circuit'] == true;
-    } catch (_) {}
-    try {
-      final hb = await widget.api.heyboxStatus();
-      heyboxEnabled = hb['enabled'] == true;
-    } catch (_) {}
-    if (!mounted) return;
-    setState(() {
-      _fishUp = fishUp;
-      _qqRunning = qqRunning;
-      _qqQr = qqQr;
-      _qqOnline = qqOnline;
-      _qqStale = qqStale;
-      _loginReason = loginReason;
-      _qqAutoCircuit = qqAutoCircuit;
-      _heyboxEnabled = heyboxEnabled;
-    });
+      var fishUp = false;
+      var qqRunning = false;
+      var qqQr = false;
+      var qqOnline = false;
+      var qqStale = false;
+      var loginReason = 'unknown';
+      var qqAutoCircuit = false;
+      var heyboxEnabled = false;
+      try {
+        await widget.api.status();
+        fishUp = true;
+      } catch (_) {}
+      try {
+        final q = await widget.api.qqStatus();
+        qqRunning = q['running'] == true;
+        qqQr = q['qr'] == true;
+        qqOnline = q['online'] == true;
+        qqStale = q['stale'] == true;
+        loginReason = (q['login_reason'] as String?) ?? 'unknown';
+        qqAutoCircuit = q['auto_circuit'] == true;
+      } catch (_) {}
+      try {
+        final hb = await widget.api.heyboxStatus();
+        heyboxEnabled = hb['enabled'] == true;
+      } catch (_) {}
+      if (!mounted) return;
+      setState(() {
+        _fishUp = fishUp;
+        _qqRunning = qqRunning;
+        _qqQr = qqQr;
+        _qqOnline = qqOnline;
+        _qqStale = qqStale;
+        _loginReason = loginReason;
+        _qqAutoCircuit = qqAutoCircuit;
+        _heyboxEnabled = heyboxEnabled;
+      });
+    } finally {
+      _refreshing = false;
+    }
   }
 
   void _snack(String msg) {
@@ -248,7 +256,7 @@ class _DeployPageState extends State<DeployPage> {
               OutlinedButton.icon(
                 onPressed: _busy ? null : _openWizard,
                 icon: const Icon(Icons.auto_fix_high),
-                label: const Text('部署向导（全新部署）'),
+                label: const Text('部署向导（安装 / 更新）'),
               ),
             ],
           ),

@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 import re
+import secrets
+import hmac
 import subprocess
 import sys
 import threading
@@ -211,7 +213,7 @@ class Fish:
         self.log("approval", "approval", f"请求审批[{kind}]: {summary}")
         return {"id": aid, "kind": kind, "summary": summary, "status": "pending"}
 
-    def execute_approval(self, aid):
+    def execute_approval(self, aid, approve=True):
         """审批同意后，按 kind 执行实际动作（发帖/评论等，后台线程跑）。"""
         ap = self.store.get_approval(aid)
         if not ap:
@@ -221,7 +223,18 @@ class Fish:
             args = json.loads(ap.get("summary", "") or "{}")
         except Exception:
             args = {}
-        if kind == "heybox_post" and self.heybox:
+        if kind in ("friend", "group"):
+            if not args.get("flag"):
+                raise ValueError("旧申请缺少平台标识，请重新发起申请")
+            if not self.qq_bot:
+                raise ValueError("QQ 未连接")
+            if kind == "friend":
+                result = self.qq_bot.set_friend_add_request(args["flag"], approve=approve)
+            else:
+                result = self.qq_bot.set_group_add_request(args["flag"], args.get("sub_type", ""), approve=approve)
+            if not result or result.get("retcode") != 0:
+                raise ValueError("平台未确认申请处理结果，请先核实 QQ 状态再操作")
+        elif kind == "heybox_post" and self.heybox:
             self.log("info", "approval", f"执行发帖: {args.get('title', '')}")
             threading.Thread(target=self.heybox.post,
                              args=(args.get("title", ""), args.get("content", "")),
@@ -347,7 +360,7 @@ class Fish:
         """QQ 是否真实在线：账号已登录（self_id 存在）且 OneBot WS 建立。
         不用 TCP 探活（8081 端口）——账号掉线/NapCat 卡死时端口仍能连上。"""
         bot = getattr(self, "qq_bot", None)
-        return bool(bot and bot.connected and bot.self_id)
+        return bool(bot and bot.connected and bot.self_id and bot.account_online is not False)
 
     def _qq_stale(self, qr_path):
         """进程活着 + 账号/WS 已掉线 + 无新鲜二维码 = 掉线但进程残留（NapCat 卡死态）。"""
@@ -386,13 +399,14 @@ class Fish:
             "qr_age": qr_age,              # 二维码生成至今秒数（-1=还没有码）
             "online": online,              # 账号已登录且 WS 真实存活（非 TCP 探活）
             "stale": process_alive and not online and not qr_fresh,  # 掉线残留
-            "login_reason": _parse_qq_log_state(),  # qq.log 最近一次登录事件归类
+            "login_reason": "unknown" if online else _parse_qq_log_state(),  # 日志是历史线索，在线时不作当前故障
             "self_id": self_id,            # 登录后的 QQ 号
             "login_uin": self._find_login_uin(),  # 从 onebot11_<uin>.json 文件名探测到的 QQ 号
             "quick_login_configured": bool(self._qq_self_heal_uin()),  # 是否配了 -q 快捷登录号（只布尔不吐号）
             "auto_circuit": bool(self._qq_auto_circuit_until and time.time() < self._qq_auto_circuit_until),
             "auto_fail_count": self._qq_auto_fail_count,
             "self_healing": self._self_healing,   # 自动快捷登录是否在途
+            "transport": self.qq_bot.diagnostics() if getattr(self, "qq_bot", None) else None,
             "device_guid": device_guid,           # 缓存的最新设备 GUID（Part B 写入）
         }
 
@@ -403,7 +417,9 @@ class Fish:
             return {"ok": False, "error": "QQ 未连接"}
         try:
             resp = bot.call_api(action, params)
-            return {"ok": True, "response": resp}
+            if resp is None:
+                return {"ok": False, "error": "OneBot 未返回确认，执行结果未知", "response": None}
+            return {"ok": resp.get("retcode") == 0, "response": resp}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -721,7 +737,7 @@ class Fish:
     # ---- 清除人格 ----
     def reset_persona(self):
         """清空名字+设定+长期记忆+短期上下文，回到出厂空白（LLM/审批等保留）。"""
-        self.store.set_settings({"persona": "", "name": ""})
+        self.store.set_settings({"persona": "", "name": "", "self_profile": {}, "life_state": {}})
         self.store.clear_memories()
         self.store.clear_short_term()
         self.log("info", "status", "人格已重置")
@@ -871,6 +887,14 @@ class Deployer:
 
 class Handler(BaseHTTPRequestHandler):
     fish = None  # 启动时注入
+    api_token = ""
+
+    def _authorized(self):
+        supplied = self.headers.get("Authorization", "")
+        if self.api_token and hmac.compare_digest(supplied.encode("utf-8"), ("Bearer " + self.api_token).encode("utf-8")):
+            return True
+        self._send(401, {"error": "需要监管 app 授权"})
+        return False
 
     def _send(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -889,6 +913,8 @@ class Handler(BaseHTTPRequestHandler):
             if "?" in self.path else {}
 
     def do_GET(self):
+        if not self._authorized():
+            return
         f = self.fish
         path = self.path.split("?")[0].rstrip("/")
         q = self._qs()
@@ -909,7 +935,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/memories":
             return self._send(200, {"memories": f.store.get_memories(
                 kind=q.get("kind"), subject=q.get("subject"), platform=q.get("platform"),
-                limit=int(q.get("limit", 100)))})
+                limit=max(1, min(1000, int(q.get("limit", 100)))), offset=max(0, int(q.get("offset", 0))),
+                include_inactive=True)})
         if path == "/settings":
             return self._send(200, f.store.get_settings())
         if path == "/approval/pending":
@@ -965,6 +992,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):
+        if not self._authorized():
+            return
         f = self.fish
         path = self.path.split("?")[0].rstrip("/")
         body = self._read_json()
@@ -1007,8 +1036,14 @@ class Handler(BaseHTTPRequestHandler):
             status = "approved" if action == "approve" else "rejected"
             if f.store.set_approval_status(aid, status):
                 f.log("info", "approval", f"审批[{aid}] {'已同意' if action == 'approve' else '已拒绝'}")
-                if action == "approve":
-                    f.execute_approval(aid)
+                ap = f.store.get_approval(aid)
+                try:
+                    if action == "approve" or ap.get("kind") in ("friend", "group"):
+                        f.execute_approval(aid, approve=action == "approve")
+                except Exception as e:
+                    f.store.mark_approval_failed(aid)
+                    f.log("error", "approval", str(e))
+                    return self._send(409, {"ok": False, "error": str(e)})
                 return self._send(200, {"ok": True, "status": status})
             return self._send(404, {"error": "not found"})
 
@@ -1018,9 +1053,17 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, {"error": "not found"})
 
     def do_PUT(self):
+        if not self._authorized():
+            return
         f = self.fish
         path = self.path.split("?")[0].rstrip("/")
         body = self._read_json()
+        if path.startswith("/memories/"):
+            try:
+                mid = f.store.update_memory(int(path.split("/")[-1]), body)
+                return self._send(200, {"ok": True, "id": mid})
+            except (ValueError, TypeError) as exc:
+                return self._send(400, {"error": str(exc)})
         if path == "/settings":
             f.store.set_settings(body)
             return self._send(200, f.store.get_settings())
@@ -1028,9 +1071,7 @@ class Handler(BaseHTTPRequestHandler):
             existing = f.store.get_settings().get("llm", {}) or {}
             merged = dict(existing)
             for k, v in (body or {}).items():
-                # 留空不覆盖：空字符串不覆盖已有的非空值（API Key 遮挡为空不会被清掉）
-                if v == "" and existing.get(k):
-                    continue
+                # Omitted fields preserve old values; explicit empty strings clear them.
                 merged[k] = v
             f.store.set_setting("llm", merged)
             return self._send(200, merged)
@@ -1047,6 +1088,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, {"error": "not found"})
 
     def do_DELETE(self):
+        if not self._authorized():
+            return
         f = self.fish
         path = self.path.split("?")[0].rstrip("/")
         if path.startswith("/memories/"):
@@ -1087,6 +1130,18 @@ def _start_qq(fish, cfg):
 
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
+    token_path = os.path.join(here, ".api-token")
+    try:
+        with open(token_path, encoding="utf-8") as token_file:
+            Handler.api_token = token_file.read().strip()
+    except FileNotFoundError:
+        pass
+    if not Handler.api_token:
+        Handler.api_token = secrets.token_urlsafe(32)
+        fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as token_file:
+            token_file.write(Handler.api_token)
+    os.chmod(token_path, 0o600)
     # 24h 保活：拿 wakelock，防止屏幕关后被系统杀
     try:
         subprocess.run([TERMUX_BIN + "/termux-wake-lock"], env=_qq_env(), timeout=10)
