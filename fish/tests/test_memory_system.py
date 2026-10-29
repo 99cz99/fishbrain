@@ -55,6 +55,8 @@ class MemoryTests(unittest.TestCase):
 
     def test_batch_update_keeps_history_and_invalidates_belief(self):
         a, b = self.fact(), self.fact('每天泡茶')
+        self.store._conn.execute('UPDATE memories SET occurred_at=?', (time.time()-3600,))
+        self.store._conn.commit()
         belief = self.store.add_reflection('可能喜欢茶', [a, b])
         event = self.episode('现在不喝茶了')
         self.store.apply_episode_result(self.store.pending_episode_batch(), {'memories': [
@@ -132,7 +134,8 @@ class MemoryTests(unittest.TestCase):
         auto._do_talk('有结果了吗', mid)
         self.assertEqual(bot.send_text.call_count, 1)
         self.assertEqual(self.store.due_intentions('qq:101'), [])
-        self.assertIn('unconfirmed', self.store.get_memories(kind='experience')[0]['content'])
+        self.assertEqual(self.store.get_memories(kind='experience'), [])
+        self.assertIn('未获确认', self.store.get_logs(category='action',limit=1)[0]['message'])
         other = self.store.add_memory('intention', '主人', '另一个事项', scope='owner', entity_id='qq:101', due_at=time.time()-10)
         self.store.update_memory(other, {'status':'cancelled'})
         self.assertFalse(self.store.claim_intention(other, 'qq:101'))

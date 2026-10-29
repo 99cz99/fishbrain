@@ -11,13 +11,15 @@ import logging
 import threading
 import time
 import urllib.request
+from collections import deque
 
 import websocket
 
 import weather
 from memory import render_self_profile, format_memory_line
 from memory_policy import data_message, evidence_data, person_code, redact_secrets, render_identity
-from delivery import SendUnconfirmedError
+from delivery import SendUnconfirmedError, SendCancelledError
+import qq_media
 
 
 # 链接里的 URL：排除空白/引号/括号/常见中文标点，避免把后文中文一起吞进去
@@ -51,7 +53,8 @@ MSG_SEND_DELAY = 0.6          # 连发多条时片间间隔（秒），模拟打
 WS_IDLE_TIMEOUT = 30
 WS_PROBE_TIMEOUT = 10
 WS_HEALTH_ECHO = "dfy_health_probe"
-SEND_CONFIRM_TIMEOUT = 30
+SEND_CONFIRM_TIMEOUT = 45
+SEND_LATE_GRACE = 30
 
 # ---- 回复采样 + 短期上下文 ----
 REPLY_TEMPERATURE = 1.1
@@ -108,8 +111,7 @@ def build_system_prompt(settings, weather=None, mood=None, stickers=None):
         parts.append(f"现在的天气：{weather}。")
     parts.append(f"你通过 {plats} 跟人互动。说话像真人、自然、不端着，{scope_hint}；用简体中文，别堆套话。")
     parts.append(f"想发 QQ 表情时在句子里写 [表情:名字]（如「[表情:呲牙]」），可用：{'、'.join(FACE_IDS.keys())}。偶尔用、别每条都发。")
-    if stickers:
-        parts.append(f"想发表情包时写 [表情包:描述]，你收藏过的有：{'、'.join(stickers)}。")
+    parts.append('想发表情包时写 [表情包:描述]，只从附加资料 available_stickers 的可用标签选择；没有可用标签就不用。')
     parts.append("你有自己的想法、喜好和立场，不是一问一答的客服；对事情表达真实看法，可以延伸话题、吐槽、甚至不认同对方。")
     return "\n".join(parts)
 
@@ -139,6 +141,12 @@ class QQBot:
         self._echo_seq = 0
         self._avatar_cache = {}  # user_id -> 头像描述（缓存，避免每条消息 vision）
         self._self_avatar_desc = ""  # 自己的头像描述（懒加载）
+        self._send_lock = threading.Lock()
+        self._send_wake = threading.Event()
+        self._delivery_local = threading.local()
+        self._receipts = deque(maxlen=256)
+        self._late_echoes = {}
+        self._conversation_versions = {}
 
     def _log(self, level, category, message):
         # Database failures must not kill transport threads; stderr goes to server.log.
@@ -157,6 +165,7 @@ class QQBot:
             "processing_since": self._processing_since,
             "health_probe_count": self._health_probe_count,
             "account_online": self.account_online,
+            "delivery": self.store.delivery_counts(),
         }
 
     def start(self):
@@ -170,6 +179,7 @@ class QQBot:
     def stop(self):
         self._running = False
         self._stop_event.set()
+        self._send_wake.set()
         self.connected = False
         self.account_online = None
         self.self_id = None
@@ -220,9 +230,17 @@ class QQBot:
                     elif echo is not None:
                         with self._lock:
                             entry = self._pending.pop(echo, None)
+                            late = self._late_echoes.pop(echo, None)
                         if entry:
                             entry["response"] = data
                             entry["event"].set()
+                        if late and late[1] >= time.time() and data.get('retcode') == 0:
+                            receipt = {'post_type': 'delivery_ack', 'delivery_id': late[0],
+                                       'message_id': (data.get('data') or {}).get('message_id')}
+                            with self._lock:
+                                self._receipts.append(receipt)
+                            self._send_wake.set()
+                            self._event_queue.put(receipt)
                     elif data.get("post_type") == "meta_event":
                         # 状态优先于耗时业务，落库交给 worker，接收线程不等待数据库。
                         if data.get("meta_event_type") == "lifecycle" and data.get("sub_type") == "connect":
@@ -233,6 +251,15 @@ class QQBot:
                     else:
                         if data.get("post_type") == "message":
                             self._last_message_at = time.time()
+                            session = self._event_session(data)
+                            with self._lock:
+                                self._conversation_versions[session] = self._conversation_versions.get(session, 0)+1
+                                data['_dfy_version'] = self._conversation_versions[session]
+                            self._send_wake.set()
+                        elif data.get('post_type') == 'message_sent':
+                            with self._lock:
+                                self._receipts.append(data)
+                            self._send_wake.set()
                         self._event_queue.put(data)
             except Exception as e:
                 self._log("error", "error", f"QQ 连接断开，5 秒后重连: {type(e).__name__}: {e}")
@@ -265,6 +292,8 @@ class QQBot:
                 self._on_event(event)
             except SendUnconfirmedError as e:
                 self._log("warning", "action", f"回复可能已送达，未获确认: {e}")
+            except SendCancelledError as e:
+                self._log('info','action',str(e))
             except Exception as e:
                 self._log("error", "error", f"QQ 事件处理出错: {type(e).__name__}: {e}")
             finally:
@@ -273,6 +302,8 @@ class QQBot:
 
     def send_qzone_mood(self, content):
         """发 QQ 空间说说（NapCat SendQzoneMsg）。"""
+        if 'qq' not in self.store.get_settings().get('enabled_platforms', []):
+            return {'ok': False, 'error': 'QQ 已禁用'}
         text = (content or "").strip()
         if not text:
             return {"ok": False, "error": "内容为空"}
@@ -294,9 +325,24 @@ class QQBot:
             self._echo_seq += 1
             echo = f"dfy_{self._echo_seq}"
             self._pending[echo] = entry
+            rid = getattr(self._delivery_local, 'rid', None)
+            self._late_echoes = {k:v for k,v in self._late_echoes.items() if v[1] >= time.time()}
+            if rid is not None:
+                self._late_echoes[echo] = (rid,time.time()+180)
         try:
             # 固定本次请求所属的连接，避免重连时误发到下一条连接。
             ws.send(json.dumps({"action": action, "params": params, "echo": echo}, ensure_ascii=False))
+            if rid is not None:
+                deadline = time.monotonic()+timeout
+                while not event.is_set() and time.monotonic() < deadline:
+                    self._drain_receipts()
+                    if self.store.delivery_status(rid) == 'confirmed':
+                        return {'retcode':0,'data':{},'confirmation':'self_event'}
+                    guard = getattr(self._delivery_local,'guard',None)
+                    if guard is not None and not guard():
+                        return None
+                    event.wait(min(0.2,max(0,deadline-time.monotonic())))
+                return entry['response'] if event.is_set() else None
             if event.wait(timeout):
                 return entry["response"]  # 用本地引用，_loop 已经 pop 掉了 _pending 里的那项
             return None
@@ -309,8 +355,27 @@ class QQBot:
             self._ws.send(json.dumps(obj, ensure_ascii=False))
 
     # ---- 发送 ----
+    @staticmethod
+    def _event_session(event):
+        kind = event.get('message_type', 'private')
+        return f"{kind}_{event.get('group_id') if kind == 'group' else event.get('user_id')}"
+
+    def _delivery_receipt(self, event):
+        if event.get('post_type') == 'delivery_ack':
+            return self.store.delivery_state(event['delivery_id'], 'confirmed', event.get('message_id'))
+        return self.store.delivery_confirm_event(event)
+
+    def _drain_receipts(self):
+        with self._lock:
+            receipts = list(self._receipts)
+            self._receipts.clear()
+        for receipt in receipts:
+            self._delivery_receipt(receipt)
+
     def send_msg(self, target, segments, msg_type="private"):
         """通用发送：target=user_id(私聊) 或 group_id(群)，segments=CQ 段数组。"""
+        if 'qq' not in self.store.get_settings().get('enabled_platforms', []):
+            raise RuntimeError('QQ 已禁用，未发送')
         action = "send_group_msg" if msg_type == "group" else "send_private_msg"
         key = "group_id" if msg_type == "group" else "user_id"
         try:
@@ -378,7 +443,7 @@ class QQBot:
             segs.append(cq_text(text))
         return segs
 
-    def _send_segments(self, target, texts, msg_type="private", at_user=None):
+    def _send_segments(self, target, texts, msg_type="private", at_user=None, guard=None):
         """把含 [表情:名字] 的多段文本按 text/face 混合发送；text 超长才拆、face 原样。"""
         units = []
         for text in texts:
@@ -398,13 +463,67 @@ class QQBot:
                     buf.append(seg)
             if buf:
                 units.append(buf)
-        for i, unit in enumerate(units):
-            if at_user is not None and i == 0:
-                self.send_msg(target, [cq_at(at_user), cq_text(" ")] + unit, msg_type)
-            else:
-                self.send_msg(target, unit, msg_type)
-            if i < len(units) - 1:
-                time.sleep(MSG_SEND_DELAY)
+        if at_user is not None and units:
+            units[0] = [cq_at(at_user), cq_text(' ')] + units[0]
+        session = f'{msg_type}_{target}'
+        with self._lock:
+            version = self._conversation_versions.get(session, 0)
+        epoch = self.store.get_setting_raw('memory_epoch') or 0
+        identity = render_identity(self.store.get_settings())
+        account = self.self_id
+        started = time.monotonic()
+        def current():
+            settings = self.store.get_settings()
+            return (not self._stop_event.is_set() and 'qq' in settings.get('enabled_platforms', [])
+                    and epoch == (self.store.get_setting_raw('memory_epoch') or 0)
+                    and identity == render_identity(settings)
+                    and self._conversation_versions.get(session,0) == version
+                    and (account is None or self.self_id == account)
+                    and time.monotonic()-started < 180 and (guard is None or guard()))
+        with self._send_lock:
+            if not current():
+                raise SendCancelledError('回复已过时或发送已取消')
+            ids = self.store.delivery_plan(account,session,units,epoch)
+            try:
+                for i, unit in enumerate(units):
+                    if not current():
+                        raise SendCancelledError('收到新消息或设定变化，停止发送剩余段落')
+                    rid = ids[i]
+                    self.store.delivery_state(rid,'sending')
+                    if not current():
+                        self.store.delivery_state(rid,'cancelled')
+                        raise SendCancelledError('发送前控制条件已变化，取消当前段落')
+                    self._delivery_local.rid = rid
+                    self._delivery_local.guard = current
+                    try:
+                        response = self.send_msg(target,unit,msg_type)
+                    except SendUnconfirmedError:
+                        self.store.delivery_state(rid,'unconfirmed')
+                        deadline = time.monotonic()+SEND_LATE_GRACE
+                        while True:
+                            self._send_wake.clear()
+                            self._drain_receipts()
+                            if self.store.delivery_status(rid) == 'confirmed':
+                                self._log('info','action',f'第 {i+1}/{len(units)} 段已收到迟到确认')
+                                break
+                            if not current() or time.monotonic() >= deadline:
+                                raise SendUnconfirmedError(f'第 {i+1}/{len(units)} 段未确认；剩余段落已取消，不自动重发')
+                            self._send_wake.wait(min(0.5,max(0,deadline-time.monotonic())))
+                    except Exception:
+                        self.store.delivery_state(rid,'rejected')
+                        raise
+                    else:
+                        changed = self.store.delivery_state(rid,'confirmed',(response.get('data') or {}).get('message_id'))
+                        if not changed and self.store.delivery_status(rid) != 'confirmed':
+                            self.store.delivery_state(rid,'unconfirmed')
+                            raise SendUnconfirmedError('平台确认标识冲突，停止剩余段落')
+                    finally:
+                        self._delivery_local.rid = None
+                        self._delivery_local.guard = None
+                    if i < len(units)-1:
+                        self._send_wake.wait(MSG_SEND_DELAY)
+            finally:
+                self.store.delivery_cancel(ids)
 
     def send_text(self, target, text, msg_type="private"):
         """发一条文字（超长自动拆多条；支持 [表情:名字]）。"""
@@ -1094,14 +1213,20 @@ class QQBot:
                 return self.send_group_forward_msg(_i("group_id"), a.get("messages", []))
             if name == "send_private_forward_msg":
                 return self.send_private_forward_msg(_i("user_id"), a.get("messages", []))
+        except (SendUnconfirmedError, SendCancelledError):
+            raise
         except Exception as e:
             self._log("error", "qq", f"工具 {name} 执行失败: {e}")
         return None
 
     # ---- 事件分发 ----
     def _on_event(self, event):
+        if event.get('post_type') != 'meta_event' and 'qq' not in self.store.get_settings().get('enabled_platforms', []):
+            return
         pt = event.get("post_type")
-        if pt == "message":
+        if pt in ('message_sent','delivery_ack'):
+            self._delivery_receipt(event)
+        elif pt == "message":
             self._on_message(event)
         elif pt == "notice":
             self._on_notice(event)
@@ -1157,6 +1282,9 @@ class QQBot:
         return "maybe"
 
     def _on_message(self, event):
+        if 'qq' not in self.store.get_settings().get('enabled_platforms', []):
+            return
+        memory_epoch = self.store.get_setting_raw('memory_epoch') or 0
         msg_type = event.get("message_type")
         user_id = event.get("user_id")
         group_id = event.get("group_id")
@@ -1164,6 +1292,8 @@ class QQBot:
         sender = event.get("sender", {}) or {}
         nickname = sender.get("card") or sender.get("nickname") or str(user_id)
         message = event.get("message")
+        conversation = self._event_session(event)
+        version = event.get('_dfy_version', self._conversation_versions.get(conversation,0))
 
         text = self._extract_text(message)
         if not text:
@@ -1197,6 +1327,9 @@ class QQBot:
             except Exception as exc:
                 self._log("error", "memory", f"事件记忆写入失败: {exc}")
         if reply_mode is None:
+            return
+        if version != self._conversation_versions.get(conversation,0):
+            self._log('info','action','同会话已有更新消息，旧消息保留记忆但不再单独回复')
             return
 
         # 图片：下载 → vision 看图（失败 OCR 兜底）
@@ -1313,6 +1446,10 @@ class QQBot:
                     ),
                     "tool_calls": [],
                 }
+            if (memory_epoch != (self.store.get_setting_raw('memory_epoch') or 0)
+                    or render_identity(settings) != render_identity(self.store.get_settings())
+                    or 'qq' not in self.store.get_settings().get('enabled_platforms', [])):
+                return
             published = False
             for tc in result.get("tool_calls", []) or []:
                 if tc.get("name") == "publish" and self.request_approval:
@@ -1331,17 +1468,20 @@ class QQBot:
 
         if not msgs:
             return  # 空回复（罕见）：不发送、不写记忆
+        if (memory_epoch != (self.store.get_setting_raw('memory_epoch') or 0)
+                or render_identity(settings) != render_identity(self.store.get_settings())):
+            return
 
         # 回复：text/face 混合段逐条发；群聊只在第一条 @
         self._send_segments(group_id if msg_type == "group" else user_id, msgs, msg_type,
-                            at_user=(user_id if msg_type == "group" else None))
+                            at_user=(user_id if msg_type == "group" else None),
+                            guard=lambda: memory_epoch == (self.store.get_setting_raw('memory_epoch') or 0)
+                            and render_identity(settings) == render_identity(self.store.get_settings())
+                            and version == self._conversation_versions.get(conversation,0))
         self._log("info", "chat", f"[QQ] 回复 {nickname}: {reply}")
 
         # 短期上下文回写：只补助手回复（user 那条统一存时已写）
-        try:
-            self.store.add_short_term(session, "assistant", reply, platform="qq")
-        except Exception:
-            pass
+        # Each part is already journaled and reflected into short_term, even on interruption.
 
         # Only a completed send is evidence of our actual behaviour. Extraction stays asynchronous.
         if event_memory_id is not None:
@@ -1386,52 +1526,50 @@ class QQBot:
 
     # ---- 图片下载 ----
     def _get_image_bytes(self, message):
-        """下载图片字节：先试 data.url，再走 get_image API。返回 (bytes, mime) 或 (None, None)。"""
+        """Try independent image sources; a broken URL must not bypass local files."""
         if not isinstance(message, list):
-            return (None, None)
-        seg = None
-        for s in message:
-            if isinstance(s, dict) and s.get("type") == "image":
-                seg = s
-                break
-        if not seg:
-            return (None, None)
-        data = seg.get("data", {}) or {}
-        url = data.get("url", "")
-        file_ref = data.get("file", "")
-
-        # 1) 直接拉 data.url（NapCat 有时给的 url 是空的或要 cookie，失败再兜底）
-        if url:
+            return None, None
+        data = next(((s.get('data') or {}) for s in message
+                     if isinstance(s, dict) and s.get('type') == 'image'), None)
+        if data is None:
+            return None, None
+        failures = []
+        def attempt(label, fn, *args):
             try:
-                req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-                with urllib.request.urlopen(req, timeout=20) as resp:
-                    return (resp.read(), resp.headers.get("Content-Type", "image/png"))
-            except Exception:
-                pass
-
-        # 2) get_image API 兜底
+                return fn(*args)
+            except Exception as exc:
+                # Do not put signed URLs, image keys or private paths into logs.
+                code = getattr(exc, 'code', '')
+                failures.append(f'{label}:{type(exc).__name__}' + (f' HTTP {code}' if code else ''))
+                return None
+        file_ref = data.get('file', '')
+        # Local originals survive NapCat restarts and third-party Rkey outages.
+        result = attempt('cache', qq_media.cached_image, file_ref)
+        if result:
+            return result
+        if data.get('url'):
+            result = attempt('message_url', qq_media.download, data['url'])
+            if result:
+                return result
         if file_ref:
-            try:
-                r = self.get_image(file_ref)
-                d = (r or {}).get("data", {}) or {}
-                if d.get("url"):
-                    req = urllib.request.Request(d["url"], headers={"User-Agent": "Mozilla/5.0"})
-                    with urllib.request.urlopen(req, timeout=20) as resp:
-                        return (resp.read(), resp.headers.get("Content-Type", "image/png"))
-                f = d.get("file", "")
-                if isinstance(f, str):
-                    if f.startswith("base64://"):
-                        return (base64.b64decode(f[len("base64://"):]), "image/png")
-                    try:
-                        with open(f, "rb") as fp:
-                            return (fp.read(), "image/png")
-                    except Exception:
-                        pass
-            except Exception as e:
-                self._log("error", "error", f"get_image 兜底失败: {e}")
-
-        self._log("error", "error", "图片下载失败（url 与 get_image 均不可用）")
-        return (None, None)
+            response = attempt('get_image_call',self.get_image,file_ref)
+            info = (response or {}).get('data') or {}
+            if not response or response.get('retcode') != 0:
+                failures.append('get_image:retcode=' + str((response or {}).get('retcode', 'no_ack')))
+            for key in ('file', 'file_path', 'path'):
+                if info.get(key):
+                    result = attempt('api_'+key, qq_media.local_image, info[key])
+                    if result:
+                        return result
+            if info.get('url'):
+                result = attempt('api_url', qq_media.download, info['url'])
+                if result:
+                    return result
+            result = attempt('cache_after_api', qq_media.cached_image, file_ref)
+            if result:
+                return result
+        self._log('error','error','图片下载失败（' + '; '.join(failures) + '）')
+        return None, None
 
     def _vision_or_ocr(self, image_bytes, mime, message):
         """看图：先 vision 模型（返回描述+情绪标签），失败再 NapCat OCR 兜底。返回 (desc, emotion)。"""

@@ -306,7 +306,7 @@ class MemorySystem(PersonalityStore):
                 targets = [target for target in targets if target["kind"] == item["kind"]]
                 source_time = max(available[s]['occurred_at'] for s in sources)
                 # A delayed/retried old event must not rewrite a newer, sourced version.
-                if any(target['source_ids'] and target['occurred_at'] > source_time for target in targets):
+                if any(target['occurred_at'] > source_time for target in targets):
                     continue
                 action = item.get("state", "active")
                 if action in ("done", "cancelled") and item["kind"] == "intention":
@@ -422,6 +422,7 @@ class MemorySystem(PersonalityStore):
         row = self._rows("id=?", (mid,), 1)
         if not row:
             return
+        self._bump_memory_epoch()
         # Traverse all ancestors, including a belief's original episode evidence.
         ancestors, pending = set(), [mid]
         while pending:
@@ -460,8 +461,14 @@ class MemorySystem(PersonalityStore):
                     raise ValueError("内容应为 1~1000 字")
                 # A human correction is authoritative, not a new model inference.
                 self._forget_memory(mid)
-                return self._insert_memory("fact", row["subject"], content, row["platform"], row["importance"],
-                                           row["scope"], entity_id=row["entity_id"], pinned=bool(row["pinned"]))
+                kind = 'intention' if row['kind'] == 'intention' else 'fact'
+                replacement = self._insert_memory(kind, row["subject"], content, row["platform"], row["importance"],
+                                           row["scope"], entity_id=row["entity_id"], pinned=bool(row["pinned"]),
+                                           due_at=row['due_at'] if kind == 'intention' else 0)
+                if kind == 'intention':
+                    self._conn.execute('UPDATE memories SET status=?,last_attempt=? WHERE id=?',
+                                       (row['status'], row['last_attempt'], replacement))
+                return replacement
             if "pinned" in changes:
                 self._conn.execute("UPDATE memories SET pinned=? WHERE id=?", (int(changes["pinned"] is True), mid))
             if "status" in changes:
@@ -472,9 +479,15 @@ class MemorySystem(PersonalityStore):
 
     def clear_memories(self):
         with self._lock, self._conn:
+            self._bump_memory_epoch()
             self._conn.execute("DELETE FROM personality_traits")
             self._conn.execute('DELETE FROM personality_vetoes')
             self._conn.execute('DELETE FROM memory_terms')
             self._conn.execute('DELETE FROM short_term')
             self._conn.execute("UPDATE memories SET status='deleted',content='',subject='',processed=1")
             self._conn.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('self_profile','{}')")
+
+    def _bump_memory_epoch(self):
+        self.delivery_forget()
+        epoch = int(self.get_setting_raw('memory_epoch') or 0) + 1
+        self._conn.execute("INSERT OR REPLACE INTO settings VALUES('memory_epoch',?)", (json.dumps(epoch),))

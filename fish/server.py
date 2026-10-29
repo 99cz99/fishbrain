@@ -23,6 +23,7 @@ from autonomy import Autonomy
 from qq_bot import STICKER_DIR
 from memory_policy import action_outcome
 from delivery import SendUnconfirmedError
+from qq_config import delivery_config
 
 # NapCat 二维码文件路径（proot-Debian 容器内，映射到 Termux 文件系统）
 DEFAULT_QRCODE_PATH = "/data/data/com.termux/files/usr/var/lib/proot-distro/containers/debian/rootfs/opt/QQ/resources/app/app_launcher/napcat/cache/qrcode.png"
@@ -221,6 +222,13 @@ class Fish:
         if not ap:
             return
         kind = ap.get("kind", "")
+        platform = 'heybox' if kind.startswith('heybox_') else 'qq'
+        if platform not in self.store.get_settings().get('enabled_platforms', []):
+            raise ValueError('该平台已禁用，未执行动作')
+        if kind not in ('friend','group','publish','heybox_post','heybox_comment'):
+            raise ValueError('该审批类型没有可用执行器')
+        if kind.startswith('heybox_') and not self.heybox:
+            raise ValueError('小黑盒未接入，未执行动作')
         try:
             args = json.loads(ap.get("summary", "") or "{}")
         except Exception:
@@ -236,6 +244,7 @@ class Fish:
                 result = self.qq_bot.set_group_add_request(args["flag"], args.get("sub_type", ""), approve=approve)
             if not result or result.get("retcode") != 0:
                 raise ValueError("平台未确认申请处理结果，请先核实 QQ 状态再操作")
+            self.store.set_execution_state(aid, 'confirmed')
         elif kind == "heybox_post" and self.heybox:
             self.log("info", "approval", f"执行发帖: {args.get('title', '')}")
             threading.Thread(target=self._execute_recorded_action,
@@ -253,17 +262,21 @@ class Fish:
                 threading.Thread(target=self._execute_recorded_action,
                                  args=(aid, kind, self.qq_bot.send_qzone_mood, (text,), 'qq'), daemon=True).start()
             else:
-                self.log("error", "approval", "发空间动态失败：内容为空或 QQ 未连接")
+                raise ValueError('发空间动态失败：内容为空或 QQ 未连接')
 
     def _execute_recorded_action(self, aid, kind, function, args, platform):
+        self.store.set_execution_state(aid, 'running')
         outcome = 'failed_or_partial'
         try:
+            if platform not in self.store.get_settings().get('enabled_platforms', []):
+                raise ValueError('平台已禁用')
             outcome = action_outcome(function(*args))
         except SendUnconfirmedError:
             outcome = 'unconfirmed'
         except Exception as exc:
             self.log('error', 'approval', f'审批动作执行失败: {type(exc).__name__}')
         finally:
+            self.store.set_execution_state(aid, outcome)
             # The approval authorizes public content; diagnostics and returned credentials are not evidence.
             self.store.record_action_result(kind, json.dumps(args, ensure_ascii=False), outcome, platform,
                                             scope='global', event_key=f'approval-result:{aid}')
@@ -450,7 +463,7 @@ class Fish:
         """自保本能：QQ 进程掉了就自动拉起（带风控护栏 + 扫码停手）。
         进程活着但已掉线（账号/WS 掉线、无新鲜码）时：配了快捷登录号且属软掉线则 -q 自愈，否则只记日志。
         由 autonomy 周期性调用；用户显式停 QQ 后不再自动拉起。"""
-        if not self._qq_auto:
+        if not self._qq_auto or 'qq' not in self.store.get_settings().get('enabled_platforms', []):
             return
         if time.time() - self.started < QQ_KEEPALIVE_GRACE_SECONDS:
             return  # 鱼脑刚启动，先别拉起/判断，给 QQ 的 WS 重连留时间
@@ -567,17 +580,24 @@ class Fish:
         if not os.path.exists(template):
             return {"ok": False, "error": "onebot11.json 模板不存在"}
         target = os.path.join(NAPCAT_CONFIG_DIR, f"onebot11_{self_id}.json")
-        if self._onebot_has_ws(target):
-            return {"ok": True, "target": target, "already": True}
         try:
             with open(template, "r", encoding="utf-8") as f:
-                content = f.read()
-            with open(target, "w", encoding="utf-8") as f:
-                f.write(content)
+                defaults = json.load(f)
+            existing = {}
+            if os.path.exists(target):
+                with open(target, encoding='utf-8') as f:
+                    existing = json.load(f)
+            updated = delivery_config(existing,defaults)
+            if updated == existing:
+                return {"ok": True, "target": target, "already": True}
+            temporary = target+'.incoming'
+            with open(temporary, 'w', encoding='utf-8') as f:
+                json.dump(updated,f,ensure_ascii=False,indent=2)
+            os.replace(temporary,target)
         except Exception as e:
             return {"ok": False, "error": f"写 OneBot 配置失败: {e}"}
         self.log("info", "qq", f"已写 OneBot 配置 onebot11_{self_id}.json，重启 QQ 让 8081 生效")
-        threading.Thread(target=self._restart_qq, daemon=True).start()
+        threading.Thread(target=self._restart_qq, kwargs={'uin': str(self_id)}, daemon=True).start()
         return {"ok": True, "target": target, "restarting": True}
 
     def _onebot_has_ws(self, path):
@@ -753,9 +773,10 @@ class Fish:
     # ---- 清除人格 ----
     def reset_persona(self):
         """清空名字+设定+长期记忆+短期上下文，回到出厂空白（LLM/审批等保留）。"""
-        self.store.set_settings({"persona": "", "name": "", "self_profile": {}, "life_state": {}})
-        self.store.clear_memories()
-        self.store.clear_short_term()
+        with self.store._lock:
+            self.store.set_settings({"persona": "", "name": "", "self_profile": {}, "life_state": {}})
+            self.store.clear_memories()
+            self.store.clear_short_term()
         self.log("info", "status", "人格已重置")
         return {"ok": True}
 
@@ -960,6 +981,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, f.store.get_settings())
         if path == "/approval/pending":
             return self._send(200, {"pending": f.store.get_pending_approvals()})
+        if path == '/approval/recent':
+            return self._send(200, {'approvals': f.store.get_recent_approvals()})
         if path == "/qrcode":
             qp = f.qq_cfg.get("qrcode_path", DEFAULT_QRCODE_PATH)
             try:
@@ -1038,6 +1061,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/life/wake":
             return self._send(200, f.life_wake())
         if path == "/heybox/sign":
+            if 'heybox' not in f.store.get_settings().get('enabled_platforms', []):
+                return self._send(409, {'error': '小黑盒已禁用'})
             return self._send(200, f.heybox.sign() if f.heybox else {"error": "小黑盒未接入"})
         if path == "/growth/evolve":
             return self._send(200, f.growth_evolve())
@@ -1054,6 +1079,8 @@ class Handler(BaseHTTPRequestHandler):
             action = parts[3]
             status = "approved" if action == "approve" else "rejected"
             if f.store.set_approval_status(aid, status):
+                if action == 'reject':
+                    f.store.set_execution_state(aid, 'not_required')
                 f.log("info", "approval", f"审批[{aid}] {'已同意' if action == 'approve' else '已拒绝'}")
                 ap = f.store.get_approval(aid)
                 try:
@@ -1061,6 +1088,7 @@ class Handler(BaseHTTPRequestHandler):
                         f.execute_approval(aid, approve=action == "approve")
                 except Exception as e:
                     f.store.mark_approval_failed(aid)
+                    f.store.set_execution_state(aid, 'unconfirmed' if ap.get('kind') in ('friend','group') else 'failed_or_partial')
                     f.log("error", "approval", str(e))
                     return self._send(409, {"ok": False, "error": str(e)})
                 return self._send(200, {"ok": True, "status": status})
@@ -1085,6 +1113,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": str(exc)})
         if path == "/settings":
             with f.store._lock:
+                if 'enabled_platforms' in body and (not isinstance(body['enabled_platforms'], list)
+                        or any(p not in ('qq','heybox','bilibili') for p in body['enabled_platforms'])):
+                    return self._send(400, {'error':'平台设置格式无效'})
                 if 'self_profile' in body:
                     if body.get('self_profile_revision') != f.store.get_settings()['self_profile_revision']:
                         return self._send(409, {'error': '画像已变化，请刷新后再保存'})
@@ -1092,7 +1123,8 @@ class Handler(BaseHTTPRequestHandler):
                     if (not isinstance(profile, dict) or set(profile)-{'values','style','likes','boundaries'}
                             or any(not isinstance(v, list) or any(not isinstance(t, str) for t in v) for v in profile.values())):
                         return self._send(400, {'error': '画像格式无效'})
-                updates = {k:v for k,v in body.items() if k not in ('self_profile_revision','growth_status','manual_self_profile','user_locked_settings')}
+                updates = {k:v for k,v in body.items() if k not in ('self_profile_revision','growth_status','manual_self_profile','user_locked_settings',
+                    'memory_epoch','life_state_revision','memory_policy_version','evolution_result')}
                 if 'self_profile' in updates:
                     f.store.save_manual_profile(updates.pop('self_profile'))
                 f.store.apply_manual_settings(updates)

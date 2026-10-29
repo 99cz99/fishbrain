@@ -57,6 +57,7 @@ class Memory {
 }
 
 class Approval {
+  final String executionState;
   final int id;
   final String kind;
   final String summary;
@@ -64,7 +65,8 @@ class Approval {
   final String status;
 
   Approval.fromJson(Map<String, dynamic> j)
-    : id = j['id'] as int? ?? 0,
+    : executionState = j['execution_state'] as String? ?? 'not_started',
+      id = j['id'] as int? ?? 0,
       kind = j['kind'] as String? ?? '',
       summary = j['summary'] as String? ?? '',
       createdAt = j['created_at'] as String? ?? '',

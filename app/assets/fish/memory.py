@@ -13,6 +13,7 @@ import threading
 import time
 
 from memory_system import MemorySystem
+from qq_delivery import DeliveryStore
 from memory_policy import TRUST_RULES, person_code, redact_secrets, CONTROL_KEYS
 
 # 软设定默认值（代码只给中性占位，用户在 app 里改）
@@ -286,10 +287,28 @@ def _overlap(query, content):
     return min(1.0, 0.4 * uni + 0.3 * bi + 0.3 * sub)
 
 
-class Store(MemorySystem):
+class Store(MemorySystem, DeliveryStore):
     def __init__(self, db_path):
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(memories)")}
+        if columns and str(db_path) != ':memory:' and not self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='qq_outbox'").fetchone():
+            backup_path = str(db_path)+'.pre-qq-delivery-v1.db'
+            if not os.path.exists(backup_path):
+                backup = sqlite3.connect(backup_path)
+                try:
+                    self._conn.backup(backup)
+                finally:
+                    backup.close()
+        approval_columns = {row[1] for row in self._conn.execute('PRAGMA table_info(approvals)')}
+        if approval_columns and 'execution_state' not in approval_columns and str(db_path) != ':memory:':
+            backup_path = str(db_path) + '.pre-link-v1.db'
+            if not os.path.exists(backup_path):
+                backup = sqlite3.connect(backup_path)
+                try:
+                    self._conn.backup(backup)
+                finally:
+                    backup.close()
         if columns and "status" not in columns and str(db_path) != ":memory:":
             backup_path = str(db_path) + ".pre-memory-v2.db"
             if not os.path.exists(backup_path):
@@ -313,6 +332,7 @@ class Store(MemorySystem):
             self._migrate()
         self._lock = threading.RLock()  # 可重入：add_memory/update_sticker 持锁时也会调 get_* 读方法
         self._apply_privacy_migration()
+        self.init_delivery()
 
     def _apply_privacy_migration(self):
         from memory_policy import contains_secret
@@ -334,6 +354,12 @@ class Store(MemorySystem):
             self._conn.execute("INSERT OR REPLACE INTO settings VALUES('memory_policy_version','3')")
 
     def _migrate(self):
+        acols = {r[1] for r in self._conn.execute('PRAGMA table_info(approvals)')}
+        if 'execution_state' not in acols:
+            self._conn.execute("ALTER TABLE approvals ADD COLUMN execution_state TEXT NOT NULL DEFAULT 'not_started'")
+            self._conn.execute("UPDATE approvals SET execution_state='unconfirmed' WHERE status!='pending'")
+        # A process restart cannot establish whether an in-flight external action completed.
+        self._conn.execute("UPDATE approvals SET execution_state='unconfirmed' WHERE status='approved' AND execution_state IN ('running','not_started')")
         # 老库补 platform 列
         for table in ("memories", "short_term"):
             cols = [r[1] for r in self._conn.execute(f"PRAGMA table_info({table})")]
@@ -392,15 +418,25 @@ class Store(MemorySystem):
         with self._lock:
             current = self.get_settings()
             locked = set(current.get('user_locked_settings') or [])
+            applied, skipped = {}, {}
             # Existing restrictions are protected even before the first editor save.
             for key, value in updates.items():
+                if current.get(key) == value:
+                    continue
                 if (key in locked or current.get(key) != snapshot.get(key)
                         or key in ('approve_money', 'approve_publish', 'midnight_ok', 'enabled_platforms')):
+                    skipped[key] = '用户控制或设置已变化'
                     continue
-                self.set_setting(key, value)
+                if current.get(key) != value:
+                    self.set_setting(key, value)
+                    applied[key] = value
+            return {'applied': applied, 'skipped': skipped}
 
     def set_setting(self, key, value):
         with self._lock:
+            if key == 'life_state':
+                revision = int(self.get_setting_raw('life_state_revision') or 0) + 1
+                self._conn.execute("INSERT OR REPLACE INTO settings VALUES('life_state_revision',?)", (json.dumps(revision),))
             if key == 'self_profile':
                 self._conn.execute("DELETE FROM personality_traits")
             self._conn.execute(
@@ -566,6 +602,20 @@ class Store(MemorySystem):
             return [dict(zip(cols, r)) for r in self._conn.execute(
                 "SELECT id, kind, summary, status, created_at FROM approvals "
                 "WHERE status = 'pending' ORDER BY id DESC")]
+
+    def get_recent_approvals(self, limit=100):
+        with self._lock:
+            cols = ('id','kind','summary','status','created_at','execution_state')
+            return [dict(zip(cols, r)) for r in self._conn.execute(
+                "SELECT id,kind,summary,status,created_at,execution_state FROM approvals WHERE status='pending' OR id IN "
+                "(SELECT id FROM approvals WHERE status!='pending' ORDER BY id DESC LIMIT ?) "
+                "ORDER BY (status='pending') DESC,id DESC", (limit,))]
+
+    def set_execution_state(self, aid, state):
+        if state not in ('running','confirmed','unconfirmed','failed_or_partial','not_required'):
+            raise ValueError('无效的执行状态')
+        with self._lock, self._conn:
+            self._conn.execute('UPDATE approvals SET execution_state=? WHERE id=?', (state, aid))
 
     def set_approval_status(self, aid, status):
         with self._lock:

@@ -23,7 +23,9 @@ from delivery import SendUnconfirmedError
 
 class TransportTests(unittest.TestCase):
     def make_bot(self):
-        return QQBot('ws://localhost:8081', Mock(), Mock())
+        store = Mock()
+        store.get_settings.return_value = {'enabled_platforms': ['qq']}
+        return QQBot('ws://localhost:8081', Mock(), store)
 
     def test_poke_direction_and_channel(self):
         bot = self.make_bot()
@@ -221,7 +223,7 @@ class TransportTests(unittest.TestCase):
                 bot.send_msg(123, [])
         bot.call_api = Mock(return_value={'retcode': 0})
         self.assertEqual(bot.send_msg(123, [], 'group'), {'retcode': 0})
-        bot.call_api.assert_called_once_with('send_group_msg', {'group_id': 123, 'message': []}, timeout=30)
+        bot.call_api.assert_called_once_with('send_group_msg', {'group_id': 123, 'message': []}, timeout=45)
 
     def test_send_timeout_retcode_is_unconfirmed(self):
         bot = self.make_bot()
@@ -234,8 +236,9 @@ class TransportTests(unittest.TestCase):
 
     def test_autonomous_unconfirmed_send_is_warning_without_retry(self):
         agent = Autonomy.__new__(Autonomy)
+        agent._paused = False
         agent.store = Mock()
-        agent.store.get_settings.return_value = {'owner_qq': '123'}
+        agent.store.get_settings.return_value = {'owner_qq': '123', 'enabled_platforms': ['qq']}
         agent.qq_bot = Mock()
         agent.qq_bot.send_text.side_effect = SendUnconfirmedError('no ack')
         agent._do_talk('hello')
@@ -247,8 +250,9 @@ class TransportTests(unittest.TestCase):
 
     def test_autonomous_rejected_send_still_reports_failure(self):
         agent = Autonomy.__new__(Autonomy)
+        agent._paused = False
         agent.store = Mock()
-        agent.store.get_settings.return_value = {'owner_qq': '123'}
+        agent.store.get_settings.return_value = {'owner_qq': '123', 'enabled_platforms': ['qq']}
         agent.qq_bot = Mock()
         agent.qq_bot.send_text.side_effect = RuntimeError('retcode=1')
         agent._do_talk('hello')
@@ -262,8 +266,9 @@ class TransportTests(unittest.TestCase):
         ]:
             with self.subTest(response=response):
                 agent = Autonomy.__new__(Autonomy)
+                agent._paused = False
                 agent.store = Mock()
-                agent.store.get_settings.return_value = {'owner_qq': '100'}
+                agent.store.get_settings.return_value = {'owner_qq': '100', 'enabled_platforms': ['qq']}
                 agent.qq_bot = Mock()
                 agent.qq_bot.send_poke.return_value = response
                 agent._do_poke()

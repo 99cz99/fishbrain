@@ -277,6 +277,13 @@ class ApiClient {
         .toList();
   }
 
+  Future<List<Approval>> recentApprovals() async {
+    final j = await _request('GET', '/approval/recent') as Map<String, dynamic>;
+    return (j['approvals'] as List)
+        .map((e) => Approval.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
   Future<void> approve(int id) async {
     await _request('POST', '/approval/$id/approve');
   }

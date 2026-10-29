@@ -145,6 +145,9 @@ void main() {
       find.widgetWithText(SwitchListTile, '半夜也能主动找我'),
     );
     expect(tile.value, isFalse);
+    await tester.ensureVisible(find.text('启用 QQ 互动'));
+    await tester.tap(find.text('启用 QQ 互动'));
+    await tester.pumpAndSettle();
     await tester.scrollUntilVisible(
       find.text('保存'),
       250,
@@ -153,6 +156,8 @@ void main() {
     await tester.tap(find.text('保存'));
     await tester.pumpAndSettle();
     expect(api.saved!['midnight_ok'], isFalse);
+    expect(api.saved!['enabled_platforms'], isNot(contains('qq')));
+    expect(api.saved!['enabled_platforms'], contains('heybox'));
     expect(api.saved!.containsKey('self_profile'), isFalse);
     expect(api.saved!.containsKey('name'), isFalse);
   });

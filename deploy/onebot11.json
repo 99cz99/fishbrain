@@ -10,7 +10,8 @@
         "host": "127.0.0.1",
         "port": 8081,
         "messagePostFormat": "array",
-        "reportSelfMessage": false,
+        "reportSelfMessage": true,
+        "enableForcePushEvent": true,
         "token": "",
         "heartInterval": 30000
       }
@@ -23,7 +24,7 @@
   "parseMultMsg": false,
   "imageDownloadProxy": "",
   "timeout": {
-    "baseTimeout": 10000,
+    "baseTimeout": 30000,
     "uploadSpeedKBps": 256,
     "downloadSpeedKBps": 256,
     "maxTimeout": 1800000

@@ -2,12 +2,13 @@
 # 代码只当感官 + 记忆；QQ 只是「当前可用的平台适配器」，不再被硬编码。
 # 记忆提炼（consolidate_memory）保持事件驱动；自省/自我进化（evolve）由心跳里它自选 reflect 触发。
 import json
+import math
 import threading
 import time
 
 from life import Life
 from memory import IMPORTANCE_REFLECT_THRESHOLD, mood_param
-from delivery import SendUnconfirmedError
+from delivery import SendUnconfirmedError, SendCancelledError
 from memory_policy import TRUST_RULES, data_message, evidence_data, action_outcome
 
 CHECK_INTERVAL = 15  # 秒：心跳循环只比时间，不做 LLM 调用
@@ -90,7 +91,7 @@ class Autonomy:
         self._profile_status('running', last_attempt=time.time())
         def run():
             try:
-                self._do_reflect("")
+                self._do_reflect("", force=True)
             finally:
                 self._growth_lock.release()
         threading.Thread(target=run, daemon=True).start()
@@ -142,13 +143,18 @@ class Autonomy:
             args = tc.get("arguments", {}) or {}
             self.store.add_log("info", "life", f"它想 {drive} → {name}：{args}")
             result = self._route(name, args)
-            if name in ("heybox_feeds", "heybox_comments") and result:
-                read_results.append({"tool": name, "result": result})
+            if name.startswith(('get_', 'heybox_feeds', 'heybox_comments')) and result:
+                read_results.append({"tool": name, "result": result,
+                                     "scope": f"group:{args['group_id']}" if args.get('group_id') else
+                                     ('global' if name.startswith('heybox_') else 'owner')})
         # 读结果回喂：把刚浏览到的内容再喂一轮，让 LLM 决定后续（如评论某条）
         if read_results:
-            ctx = ("你刚刚浏览到这些：\n" + json.dumps(read_results, ensure_ascii=False)
-                   + "\n接下来想做点什么（可以评论、点赞，或就算了）？")
-            follow = self.life.decide_action(drive, tools, extra_context=ctx)
+            public = all(r['scope'] == 'global' for r in read_results)
+            follow_tools = self.select_tools('表达' if public else '陪伴')
+            if not public:
+                follow_tools = [t for t in follow_tools if t['function']['name'] in ('send_message','like_master','poke_master')]
+            ctx = data_message({'read_results': read_results})['content'][:24000]
+            follow = self.life.decide_action('表达' if public else '陪伴', follow_tools, extra_context=ctx)
             for tc in follow:
                 name = tc.get("name", "")
                 args = tc.get("arguments", {}) or {}
@@ -184,10 +190,24 @@ class Autonomy:
         if self.heybox:
             pool += self.heybox.get_tools()
         by_name = {t["function"]["name"]: t for t in pool}
-        return [by_name[n] for n in names if n in by_name]
+        return [by_name[n] for n in names if n in by_name and self._tool_enabled(n)]
+
+    def _tool_enabled(self, name):
+        if name == 'reflect':
+            return self.store.get_settings().get('allow_self_evolve', True)
+        platform = 'heybox' if name.startswith('heybox_') else 'qq'
+        adapter = self.heybox if platform == 'heybox' else self.qq_bot
+        return adapter is not None and platform in self.store.get_settings().get('enabled_platforms', [])
+
+    def _can_contact_owner(self):
+        settings = self.store.get_settings()
+        return (not self._paused and self._tool_enabled('send_message')
+                and (settings.get('midnight_ok', True) or time.localtime().tm_hour >= 8))
 
     # ---- 意图执行（工具分发）----
     def _route(self, name, args):
+        if self._paused or not self._tool_enabled(name):
+            return None
         args = args or {}
         if name == "send_message":
             self._do_talk(args.get("text", ""), args.get("intention_id"))
@@ -209,7 +229,7 @@ class Autonomy:
         try:
             result = handler(name, args)
         except Exception as exc:
-            if writes:
+            if writes and not isinstance(exc, SendCancelledError):
                 self.store.record_action_result(name, json.dumps(args, ensure_ascii=False),
                     'unconfirmed' if isinstance(exc, SendUnconfirmedError) else 'failed_or_partial', platform)
             raise
@@ -219,6 +239,8 @@ class Autonomy:
         return result
 
     def _do_talk(self, detail, intention_id=None):
+        if not self._can_contact_owner():
+            return
         text = (detail or "").strip()
         if not text:
             return
@@ -245,12 +267,18 @@ class Autonomy:
         except SendUnconfirmedError as e:
             outcome = "unconfirmed"
             self.store.add_log("warning", "action", f"主动说话可能已送达，未获确认（部分消息可能已发送）: {e}")
+        except SendCancelledError as e:
+            outcome = 'cancelled'
+            self.store.add_log('info','action',f'主动消息已取消: {e}')
         except Exception as e:
             outcome = "failed_or_partial"
             self.store.add_log("error", "error", f"主动说话失败: {e}")
-        self.store.record_self_experience(f"主动发送消息，结果={outcome}：{text}", "owner")
+        if outcome == 'confirmed':
+            self.store.record_self_experience(f"主动发送消息，结果={outcome}：{text}", "owner")
 
     def _do_like(self):
+        if not self._can_contact_owner():
+            return
         owner = str(self.store.get_settings().get("owner_qq", "") or "").strip()
         if not owner or not self.qq_bot:
             return
@@ -263,6 +291,8 @@ class Autonomy:
             self.store.add_log("error", "error", f"点赞失败: {e}")
 
     def _do_poke(self):
+        if not self._can_contact_owner():
+            return
         owner = str(self.store.get_settings().get("owner_qq", "") or "").strip()
         if not owner or not self.qq_bot:
             return
@@ -286,13 +316,13 @@ class Autonomy:
         else:
             self.store.add_log("info", "life", f"它想发东西（暂无审批通道）：{detail}")
 
-    def _do_reflect(self, detail):
+    def _do_reflect(self, detail, force=False):
         try:
             self.evolve(detail)
         except Exception as e:
             self.store.add_log("error", "growth", f"自省失败: {e}")
         try:
-            self.distill_self_profile(force=True)
+            self.distill_self_profile(force=force)
         except Exception as e:
             self.store.add_log("error", "growth", f"自我画像提炼失败: {e}")
 
@@ -335,18 +365,21 @@ class Autonomy:
             )
             reply = self.brain.chat([{"role": "system", "content": TRUST_RULES}, {"role": "user", "content": prompt}])
             obj = self._parse_json(reply)
-            n = self.store.apply_episode_result(episodes, obj)
-            if n:
-                self.store.add_log("info", "memory", f"提炼了 {n} 条长期记忆")
-                self._bump_reflect_credit(n * 5)
-            app = obj.get("appraisal") if isinstance(obj, dict) else None
-            if isinstance(app, dict):
-                try:
-                    occurred = [float(r.get("occurred_at") or 0) for r in episodes]
-                    mood_at = max(occurred) if occurred and max(occurred) > 0 else time.time()
-                    self._nudge_mood(app, mood_at)
-                except (TypeError, ValueError):
-                    pass
+            with self.store._lock:
+                if any(not self.store._rows("id=? AND status='active' AND processed=0", (r['id'],), 1) for r in episodes):
+                    return
+                n = self.store.apply_episode_result(episodes, obj)
+                if n:
+                    self.store.add_log("info", "memory", f"提炼了 {n} 条长期记忆")
+                    self._bump_reflect_credit(n * 5)
+                app = obj.get("appraisal") if isinstance(obj, dict) else None
+                if isinstance(app, dict):
+                    try:
+                        occurred = [float(r.get("occurred_at") or 0) for r in episodes]
+                        mood_at = max(occurred) if occurred and max(occurred) > 0 else time.time()
+                        self._nudge_mood(app, mood_at)
+                    except (TypeError, ValueError):
+                        pass
         except Exception as e:
             self.store.retry_episodes(episodes)
             self.store.add_log("error", "memory", f"记忆提炼失败: {e}")
@@ -366,6 +399,8 @@ class Autonomy:
         min_intensity = mood_param(settings, "appraisal_min_intensity", APPRAISAL_MIN_INTENSITY)
         if intensity < min_intensity:
             return
+        # Age only this event's increment; never rewind the timestamp of current state.
+        intensity *= math.exp(-max(0., time.time()-float(mood_at)) / 14400.)
         k_v = mood_param(settings, "appraisal_nudge_k", APPRAISAL_NUDGE_K)
         k_a = mood_param(settings, "appraisal_arousal_k", APPRAISAL_AROUSAL_K)
         k_d = mood_param(settings, "appraisal_dominance_k", APPRAISAL_DOMINANCE_K)
@@ -393,7 +428,7 @@ class Autonomy:
             d["arousal"] = new_a
             d["dominance"] = new_d
             d["attribution"] = new_t
-            d["mood_at"] = mood_at
+            d["mood_at"] = time.time()
             self.store.set_life_state(d)
         self.store.add_log("info", "life", f"事件评估 desirability={desirability:.2f} intensity={intensity:.2f} → valence {old_v:.2f}→{new_v:.2f}, dominance {new_d:.2f}, attribution {new_t:.2f}")
 
@@ -585,10 +620,10 @@ class Autonomy:
                 elif k == "enabled_platforms" and isinstance(v, list):
                     evolvable[k] = [p for p in v if p in ("qq", "heybox", "bilibili")]
 
-            self.store.apply_evolved_settings(evolvable, settings)
-
-            self.store.add_log("info", "growth", "自省完成，新设定已生效")
-            self.store.add_log("info", "growth", json.dumps(evolvable, ensure_ascii=False))
+            result = self.store.apply_evolved_settings(evolvable, settings)
+            self.store.set_setting('evolution_result', result)
+            self.store.add_log("info", "growth", "自省完成，已应用变更" if result['applied'] else "自省完成，无设置变更")
+            self.store.add_log("info", "growth", json.dumps(result, ensure_ascii=False))
         except Exception as e:
             self.store.add_log("error", "growth", f"自省失败: {e}")
 

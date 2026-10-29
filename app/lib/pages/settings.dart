@@ -51,6 +51,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _money = true;
   bool _publish = true;
   bool _selfEvolve = true;
+  Set<String> _enabledPlatforms = {'qq', 'heybox', 'bilibili'};
   bool _heyboxEnabled = false;
   String _heyboxId = '';
   bool _loaded = false;
@@ -61,6 +62,13 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _profileDirty = false;
   bool _fillingProfile = false;
   String? _growthError;
+  Map<String, dynamic> _evolutionResult = {};
+  String get _evolutionText {
+    if (_evolutionResult.isEmpty) return '';
+    final applied = _evolutionResult['applied'] as Map? ?? {};
+    final skipped = _evolutionResult['skipped'] as Map? ?? {};
+    return '最近设定自省：实际变更 ${applied.length} 项，保留用户控制 ${skipped.length} 项';
+  }
 
   void _profileEdited() {
     if (!_fillingProfile) _profileDirty = true;
@@ -161,6 +169,9 @@ class _SettingsPageState extends State<SettingsPage> {
         _growthStatus = Map<String, dynamic>.from(
           s['growth_status'] as Map? ?? {},
         );
+        _evolutionResult = Map<String, dynamic>.from(
+          s['evolution_result'] as Map? ?? {},
+        );
         final keepDraft = _profileDirty;
         Map<String, dynamic> sp = const {};
         final spt = s['self_profile'];
@@ -198,6 +209,9 @@ class _SettingsPageState extends State<SettingsPage> {
         _money = s['approve_money'] ?? true;
         _publish = s['approve_publish'] ?? true;
         _selfEvolve = s['allow_self_evolve'] ?? true;
+        _enabledPlatforms = Set<String>.from(
+          s['enabled_platforms'] as List? ?? ['qq', 'heybox', 'bilibili'],
+        );
         _llmApiKey.text = llm['api_key'] ?? '';
         _llmBaseUrl.text = llm['base_url'] ?? '';
         _llmModel.text = llm['model'] ?? '';
@@ -249,6 +263,7 @@ class _SettingsPageState extends State<SettingsPage> {
       'approve_money': _money,
       'approve_publish': _publish,
       'allow_self_evolve': _selfEvolve,
+      'enabled_platforms': _enabledPlatforms.toList(),
     };
     final fields = switch (section) {
       'profile' => {'self_profile'},
@@ -259,6 +274,7 @@ class _SettingsPageState extends State<SettingsPage> {
         'approve_money',
         'approve_publish',
         'allow_self_evolve',
+        'enabled_platforms',
       },
       'mood_params' => {'mood_params'},
       _ => {'name', 'owner_qq', 'city', 'persona'},
@@ -635,6 +651,7 @@ class _SettingsPageState extends State<SettingsPage> {
       () => [
         Text(_growthText),
         Text(_lastGrowthSuccess),
+        if (_evolutionResult.isNotEmpty) Text(_evolutionText),
         TextButton.icon(
           onPressed: () async {
             if (_profileDirty) {
@@ -686,6 +703,7 @@ class _SettingsPageState extends State<SettingsPage> {
     return _subPage(
       '行为',
       () => [
+        const Text('保存后，本页行为限制由你控制，自动自省不会覆盖。消息、戳一戳和点赞共用夜间静默限制。'),
         SectionCard(
           children: [
             _labeledSegmented(
@@ -767,6 +785,24 @@ class _SettingsPageState extends State<SettingsPage> {
               _midnight,
               (v) => _changed(() => _midnight = v),
             ),
+            _switch(
+              '启用 QQ 互动',
+              _enabledPlatforms.contains('qq'),
+              (v) => _changed(() {
+                v
+                    ? _enabledPlatforms.add('qq')
+                    : _enabledPlatforms.remove('qq');
+              }),
+            ),
+            _switch(
+              '启用小黑盒互动',
+              _enabledPlatforms.contains('heybox'),
+              (v) => _changed(() {
+                v
+                    ? _enabledPlatforms.add('heybox')
+                    : _enabledPlatforms.remove('heybox');
+              }),
+            ),
             _switch('花钱前先问我', _money, (v) => _changed(() => _money = v)),
             _switch('对外发内容前先问我', _publish, (v) => _changed(() => _publish = v)),
             _switch(
@@ -790,6 +826,9 @@ class _SettingsPageState extends State<SettingsPage> {
     return _subPage(
       'LLM 配置',
       () => [
+        const Text(
+          'OpenAI 兼容接口使用原生工具调用；Claude/Gemini 使用经过校验的 JSON 行动计划，格式不正确时不会执行。',
+        ),
         SectionCard(
           children: [
             _segmented<String>(

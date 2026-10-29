@@ -19,7 +19,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
        │     life.py     「心」：心跳。两段式——先定 drive（本能面），再定具体动作
        │     autonomy.py 自主循环：心跳调度 + 工具选择层(select_tools) + 分发(_route)
        │     qq_bot.py   OneBot v11 WS 客户端 + 工具注册表(get_tools/handle_tool，约 92 个 NapCat 工具)
-       │     delivery.py 发送未获确认的共享异常（SendUnconfirmedError）
+       │     qq_delivery.py 分段发送日志（qq_outbox）、状态确认与上下文原位回写
+       │     qq_media.py QQ 原图缓存、容器路径映射与网络图片兜底
+       │     qq_config.py OneBot 发送配置迁移，保留已有凭据和其他连接
+       │     delivery.py 共享发送异常（SendUnconfirmedError / SendCancelledError）
        │     heybox.py   小黑盒 HTTP API：签到/抽奖/领券/发帖/评论/浏览（契约同 qq_bot）
        │
        ├── 监管 app (Flutter · Android 8.0/API 26+ · 仅一个插件 image_picker)    6 tab：状态/聊天/审批/记忆/设定/部署
@@ -33,11 +36,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **生命体怎么「活」**：核心是 `life.py` 的心跳——它自己定下次醒来的时间（存 `life_state`，重启不丢），到点醒来先定「本能面 drive」（陪伴/表达/好奇/成长/存在/玩耍/none，多数时候 none=发呆），非 none 再按 drive 从工具注册表筛相关工具、用 function calling 选一个具体动作。
 
-**能力接线方式（工具注册表，不是 prompt 枚举）**：核心状态工具在 `life._core_tools()`（update_mood/schedule_next_wake/set_drive）；高层动作在 `life.action_tools()`（publish/reflect）；平台(NapCat)工具在 `qq_bot.get_tools()`（约 92 个，返回 function-calling 定义，`handle_tool` 分发）。`autonomy.DRIVE_TOOLS` 是 drive→工具名映射，`select_tools(drive)` 筛选（现在全量；工具多了再加动态路由）。加新平台 = 写个模块暴露 `get_tools()` + `handle_tool()`，核心不改（`heybox.py` 就是照 `qq_bot.py` 写的现成例子）。**坑**：`brain.chat_with_tools` 的 function calling **只在 `provider=="openai"`（或 openai 兼容，默认 DeepSeek）时生效**——anthropic/gemini 会静默回退成纯 chat、不返回 `tool_calls`，故整套工具/自主层（`life.decide_action`、`publish` 等）依赖 openai 系 provider。
+**能力接线方式（工具注册表，不是 prompt 枚举）**：核心状态工具在 `life._core_tools()`（update_mood/schedule_next_wake/set_drive）；高层动作在 `life.action_tools()`（publish/reflect）；平台(NapCat)工具在 `qq_bot.get_tools()`（约 92 个，返回 function-calling 定义，`handle_tool` 分发）。`autonomy.DRIVE_TOOLS` 是 drive→工具名映射，`select_tools(drive)` 筛选（现在全量；工具多了再加动态路由）。加新平台 = 写个模块暴露 `get_tools()` + `handle_tool()`，核心不改（`heybox.py` 就是照 `qq_bot.py` 写的现成例子）。**坑**：`brain.chat_with_tools` 的 function calling 在 openai 兼容接口使用原生工具调用；anthropic/gemini 使用普通文本接口返回 JSON 行动计划，经工具白名单和参数校验后执行，格式错误会明确报错并停止该轮行动。
 
 **记忆与回复（核心行为，改这里先读这段）**——原则：**智能体记忆统一**（私聊/群聊/各平台都是同一个智能体的记忆，不按渠道隔离；参考 Generative Agents「统一存+按相关性取」/ MemGPT「工作记忆+召回记忆」/ aidevops「隐私边界」）。
-- 记忆 v2：详见 `docs/memory-system.md`。`memory.py:Store` 继承 `memory_system.MemorySystem`，区分事件/事实/暂定认识/未完事项/自身经历；使用稳定人物 ID、来源 ID、隐私继承、事实更新和删除墓碑。提炼在后台执行，反思不整批吸收事实。活跃事实目标 300 条，新记忆保护 24h、固定记录免淘汰，超额归档而非删除证据。旧 self/fact 洞察迁移时隔离，先通过 SQLite backup 备份。**主人在群里说话仍按 group 范围召回**；当前事件也要从长期召回及工作摘要中排除，防输入重复。每条记忆带 `emotion` 列（内容情感色彩 -1~1），召回时情绪明显的带标注（`memory.format_memory_line`）。
+- 记忆 v2：详见 `docs/memory-system.md`。`memory.py:Store` 继承 `memory_system.MemorySystem` 与 `qq_delivery.DeliveryStore`，区分事件/事实/暂定认识/未完事项/自身经历；使用稳定人物 ID、来源 ID、隐私继承、事实更新和删除墓碑。提炼在后台执行，反思不整批吸收事实。活跃事实目标 300 条，新记忆保护 24h、固定记录免淘汰，超额归档而非删除证据。旧 self/fact 洞察迁移时隔离，先通过 SQLite backup 备份。**主人在群里说话仍按 group 范围召回**；当前事件也要从长期召回及工作摘要中排除，防输入重复。每条记忆带 `emotion` 列（内容情感色彩 -1~1），召回时情绪明显的带标注（`memory.format_memory_line`）。
 - 短期上下文 `memory.py:short_term`：**统一存**——`_on_message` 在回复决策**之前**就把所有消息（含非 @ 群消息）写进去、带来源标签（`[群 X] 某人:` / `[私聊] 某人:`）；`get_short_term(scope)` 按同一套隐私层级取「最近 N 条」（owner 全渠道、群只看本群、私聊只看本人）。**坑（已踩已修，别回退）**：当前消息既进了 short_term（带前缀）又作为 final user turn 单独 append，会让 LLM 看到同一条消息两遍、误以为「对方发了两遍」——拼 `chat_messages` 时要用写 short_term 时的**原文 `written_user`**（在图片/链接处理改 `text` 之前就存好）把 `history[-1]` 里这条剔掉，见 `qq_bot.py:_on_message`。
+- 助手上下文按发送段维护：`qq_delivery.py` 在提交前保存发送状态，并写入带「未确认、勿自动重发」标记的助手上下文；确认后原位更新。尚未提交的尾段不进入聊天历史，不能再等整轮全部成功才回写，避免第一段已送达但模型以为自己没回答。人格成长仍只吸收已确认的实际回复，未知结果不视为成功行为。忘记/重置使旧发送内容和匹配信息失效，迟到回报不能重建已删除的上下文。
 - 回复策略 `qq_bot.py:_should_reply_quick`：私聊/@我必回、@别人不回；**其它群消息交给 `brain.should_reply()`（LLM 语义判断「该不该回」，不是关键词）**。旧的「主动插话漏斗」（`Store.relevance` 2-gram + 概率 + follow-up 重叠）已删。
 - `build_system_prompt` 注入 `life_state.mood`（让心情**隐式**影响语气、别直说）+ 一句「有自己的想法不是客服」的观点引导。心情是**四维 PAD+归因**：`life_state` 带 `valence`(-1..1)/`arousal`(0..1)/`dominance`(-1..1)/`attribution`(-1..1)，`mood` 标签由 `memory.mood_label` 从四维**唯一推导（不落盘）**；读时按**双时间常数 + 不对称**衰减回**有效基线**（`temperament` 气质基线 + 天气/昼夜偏移，`memory.decay_mood`/`get_life_state`；正情绪衰减慢、负情绪快速恢复），事件 nudge（`autonomy._nudge_mood`）走**方向性饱和**（只挡推向更极端、不挡恢复）；`mood_label` 负情绪高唤醒区用 dominance+attribution 三分「烦躁(愤怒)/内疚/害怕」。心情还经「回忆情绪明显的记忆」**情感传染**（`life.heartbeat`）、注入四维数值**影响 drive 选择**（`life._prompt`）。所有算法超参（快慢比例/正负 τ 缩放/传染强度/各 nudge 系数/最低强度阈值）存 settings `mood_params`，app「设定→算法超参」页可改，`memory.mood_param()` 读、缺键回退常量默认。
 - 自身人格画像统一：`personality.py` 的 `personality_traits` 保存自动特质与私人依据；`settings.self_profile` 保存手动条目，`get_settings()` 合并后经 `render_self_profile()` 注入所有聊天和 life prompt。QQ 实际发送回复后记录同范围 self/experience，引用原始事件并增加反思积分；私有自身经历可以经提炼及单独的隐私/证据审查塑造公开特质，但私人故事、关系事实、人物及依据 ID 不进入公开提示词。新特质至少2个独立根事件，修改旧特质至少3个；删除依据仅撤销支持不足的自动条目。`growth_status` 提供进度、跳过原因及更新时间；画像保存须带 `self_profile_revision`，冲突返回409。自动一小时节流及 allow_self_evolve 门控，手动强制检查。`evolve()` 只改软设定；旧隔离洞察不自动恢复。详见 `docs/memory-system.md`。
@@ -48,7 +52,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **HTTP 端点**（server.py）：
 所有端点（含图片）均要求 `Authorization: Bearer <token>`，无授权返回 401。鱼脑首次启动在脚本目录生成 `.api-token`（0600）；app 通过已授权的 Termux 命令读取并仅在内存缓存，HTTP 不提供取令牌接口。不要打印令牌、完整回传 extras 或将令牌入库。升级此机制必须同时更新 APK 和鱼脑：先装新 APK，再更新并重启鱼脑。
 
-- **GET**：`/status /logs /chat /memories /settings /llm /usage /approval/pending /qrcode /life/state /qq/status /heybox/status /deploy/status /stickers /stickers/<id>/image`
+- **GET**：`/status /logs /chat /memories /settings /llm /usage /approval/pending /approval/recent /qrcode /life/state /qq/status /heybox/status /deploy/status /stickers /stickers/<id>/image`
 - **POST**：`/command /life/wake /qq/start /qq/stop /qq/refresh_qr /qq/quick_login /qq/api /qq/apply_onebot /deploy/qq /heybox/sign /growth/evolve /persona/reset /approval/<id>/approve /approval/<id>/reject /stickers`
 - **PUT**：`/settings /llm /heybox /qq/quick_login_uin /stickers/<id> /memories/<id>`
 - **DELETE**：`/memories/<id> /stickers/<id>`
@@ -77,11 +81,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cd fish
 python server.py                                    # 起本地 API
-python -m py_compile server.py brain.py memory.py life.py autonomy.py qq_bot.py heybox.py weather.py delivery.py memory_system.py
+python -m py_compile server.py brain.py memory.py memory_system.py memory_policy.py personality.py life.py autonomy.py qq_bot.py qq_delivery.py qq_media.py qq_config.py heybox.py weather.py delivery.py
 curl -H "Authorization: Bearer $(cat .api-token)" http://127.0.0.1:8765/status   # 同目录探活，别打开 shell xtrace
 ```
 
-仓库根目录执行 `python -m unittest discover -s fish/tests -v` 跑 Python 回归；不使用真凭据或发送真实消息。
+仓库根目录执行 `python -m unittest discover -s fish/tests -v` 跑 Python 回归；不使用真凭据或发送真实消息。QQ 发送与图片回归集中在 `fish/tests/test_qq_delivery.py` 和 `fish/tests/test_qq_transport.py`。
 
 **监管 app（Flutter，仅一个插件 image_picker）**
 ```bash
@@ -94,6 +98,8 @@ adb shell pm grant com.dfy.dfy_app com.termux.permission.RUN_COMMAND   # 仅检�
 ```
 
 缺少依赖映射时先 `flutter pub get`，不要顺便升级依赖或改镜像来源。网络受限时可给本次 Gradle 命令传代理 JVM 属性，不把个人代理地址或全局设置写进仓库。**直接运行 Gradle 可能沿用 `android/local.properties` 的旧版本号**，最终打包优先使用 Flutter 构建入口，并核对 APK/手机的 versionName、versionCode。
+
+Flutter 命令在联网版本检查阶段长时间无输出时，可在本次命令加全局参数 `--no-version-check`，例如 `flutter --no-version-check analyze --no-pub`；先确认本次进程和 SDK 锁状态，不删除缓存锁或终止其他任务的进程。此参数不跳过分析、测试或构建。
 
 正式发布签名从未入库的 `app/android/key.properties` 加载（storeFile、storePassword、keyAlias、keyPassword）；正式构建设置 Gradle 属性 `productionRelease=true`，缺配置即失败。未提供发布材料时本地构建仍沿用原 Debug 签名以兼容设备升级，不能视为正式发布；不要自行生成新证书替换既有身份。
 
@@ -113,11 +119,21 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux sh -c 'cd /data/data/com.termux/
 MSYS_NO_PATHCONV=1 adb shell "run-as com.termux sh -c 'sh /data/data/com.termux/files/home/dfy/run-fish.sh >> /data/data/com.termux/files/home/dfy/server.log 2>&1 < /dev/null &'"
 ```
 
+涉及发送表迁移或 OneBot 配置升级时，优先使用带备份/验证的更新脚本，代替上面的直接复制流程。以下在仓库根目录、Git Bash 执行；暂存目录只放本次文件，工具脚本不会复制进运行目录：
+
+```bash
+MSYS_NO_PATHCONV=1 adb shell mkdir -p /data/local/tmp/dfy-delivery-update
+MSYS_NO_PATHCONV=1 adb push fish/*.py deploy/run-fish.sh deploy/setup-fish.sh deploy/setup-qq.sh deploy/onebot11.json tools/deploy_memory_update.py tools/deploy_qq_delivery_update.py /data/local/tmp/dfy-delivery-update/
+MSYS_NO_PATHCONV=1 adb shell "run-as com.termux /data/data/com.termux/files/usr/bin/python /data/local/tmp/dfy-delivery-update/deploy_qq_delivery_update.py --stage /data/local/tmp/dfy-delivery-update"
+```
+
+该脚本要求更新前已有在线 QQ 会话；先备份源码/数据库，再按运行模块白名单切换并探活，随后备份、迁移实际账号配置。运行模块切换或健康检查失败会恢复备份；配置阶段失败会报告错误，需要检查保存的 OneBot 备份，不能视为整条流程已自动回滚。成功输出含 `backup` 路径；用 `deploy_memory_update.py --verify --backup <该路径>` 复核数据和配置保留。新增运行模块时同时更新此工具的 `MODULES` 白名单。首次添加发送表还会生成 `<数据库>.pre-qq-delivery-v1.db`；备份含私人内容，仅留手机本地。回退应成套恢复源码、数据库与实际 OneBot 配置，避免混装。
+
 ## 关键约定 / 坑（硬经验，别重踩）
 
 - **端口固定**：鱼脑 8765、NapCat WS 8081、NapCat WebUI 6099，全 127.0.0.1。
-- **部署向导区分安装与升级**：环境检查通过后才能进入安装；`allow-external-apps` 仍需用户在 Termux 设置。源码和运行脚本先写 `~/dfy/.update/`，安装环境并 `py_compile` 通过后才停止旧 supervisor/server、复制新代码并启动 supervisor；最后检查带授权的 `/status`。已有安装直接进入更新完成页，跳过模型填写与 QQ 重装。保留 config.toml、fish.db、.api-token 和 QQ 登录；config.toml 只在不存在时创建。暂存/校验失败时不停止旧服务；切换失败会报告错误，需要检查后重试，尚无自动回滚。不要仅写文件再调用启动：PID 守卫会让旧进程继续运行、新代码不生效。
-- **向导资源清单需联动**：新增 Python 模块除了复制到 `app/assets/fish/`，还必须登记 `wizard.dart` 的资源映射；`delivery.py` 已登记。`WizardPage.assetLoader` 是测试注入点，生产默认读取 rootBundle。完整新装/升级真机流程仍需验证，不能把模拟命令测试当成真机端到端。
+- **部署向导区分安装与升级**：环境检查通过后才能进入安装；`allow-external-apps` 仍需用户在 Termux 设置。源码和运行脚本先写 `~/dfy/.update/`，安装环境并 `py_compile` 通过后才停止旧 supervisor/server、复制新代码并启动 supervisor；最后检查带授权的 `/status`。已有安装直接进入更新完成页，跳过模型填写与 QQ 重装。保留 config.toml、fish.db、.api-token 和 QQ 登录；config.toml 只在不存在时创建。暂存/校验失败时不停止旧服务；切换失败会报告错误，需要检查后重试，尚无自动回滚。不要仅写文件再调用启动：PID 守卫会让旧进程继续运行、新代码不生效。 更新鱼脑时也暂存并复制 `onebot11.json`，升级探活后调用 `/qq/apply_onebot`；配置确有变化时 QQ 会短暂重连，不能再承诺整个升级只重启鱼脑。已有配置满足要求时不重启 QQ。
+- **向导资源清单需联动**：新增 Python 模块除了复制到 `app/assets/fish/`，还必须登记 `wizard.dart` 的资源映射；当前 15 个运行模块均由同步脚本登记，新增的 `qq_delivery.py`、`qq_media.py`、`qq_config.py` 也必须随包部署。`WizardPage.assetLoader` 是测试注入点，生产默认读取 rootBundle。完整新装/升级真机流程仍需验证，不能把模拟命令测试当成真机端到端。
 - **`setup-qq.sh` / `onebot11.json` 必须与 `server.py` 同目录（Termux `~/dfy/`）**：`/deploy/qq` 读 `setup-qq.sh`、`/qq/apply_onebot` 读 `onebot11.json`。repo 里它们在 `deploy/`，app 部署向导会写入 Termux；纯 adb 手动部署时（下方命令只 push `fish/*.py` + `run-fish.sh`）需一并 push。
 - **凭据 vs 软设定**：LLM 的 key/base_url/model 存 **SQLite settings**（app「设定」页改，`/llm` 读写，`brain.py` 每次动态读）；**别**再放 config.toml。小黑盒 token 也已移到 **SQLite settings**（app「设定」页填、`/heybox` PUT 热生效；config.toml 里的旧 token 只在「从未在 app 设置过」时首次迁移一次，之后 app 是权威、清空即停用）。B站 cookie 才放 config.toml。
 - **小黑盒 hkey 签名 + 凭据**：app 接口（签到/发帖）走外部 hkey 服务 `https://hkey.qcciii.com/hkey`；web 接口（浏览/抽奖/领券）本地算 `makeWebHkey`（`heybox.py` 里 MD5+混淆，移植自 yowiv08/heybox，已用 Node 原版比对值一致）。凭据 `pkey=xxx;x_xhh_tokenid=xxx` 必须是**手机 app 版** pkey——网页版 `user_pkey` / 加速器的 pkey 都不行（签到会「请重新登录」）。
@@ -130,7 +146,9 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux sh -c 'sh /data/data/com.termux/
 - **QQ 自动拉起熔断**：`qq_keep_alive` 连续 `QQ_AUTO_MAX_FAIL=5` 次自动拉起仍无法稳定在线 → 熔断 `QQ_AUTO_CIRCUIT_SECONDS=1800` 秒不拉起；只有「持续稳定在线 `QQ_AUTO_STABLE_SECONDS=300` 秒」或「用户显式启动 QQ」才清零。`/qq/status` 暴露 `auto_circuit`/`auto_fail_count`，app 部署页显示「已熔断」提示。注意：`qq_start(reset_circuit=False)` 是参数化的——只有 `/qq/start` 端点、`qq_refresh_qr` 传 `reset_circuit=True` 清零，自动拉起路径不传（否则计数永远累加不到阈值）。
 - **发 QQ 空间动态（publish 审批链路）**：`publish` 工具（`life.action_tools()` 和聊天场景都有）走审批 `kind="publish"`，summary 是**纯文本 detail（正文）非 JSON**；同意后 `execute_approval` 调 `qq_bot.send_qzone_mood(text)` → `call_api("send_qzone_msg")` 发说说。坑：NapCat action 名是 **snake_case `send_qzone_msg`**，不是 `SendQzoneMsg`；`send_qzone_mood` 里失败（retcode != 0）会 `add_log("error","qq",...)` 记录。
 - **QQ 断连诊断信号优先级（别误判）**：「测试Packet 超时」和启动时的「等待网络连接/网络已连接」不能证明账号掉线；明确的账号离线事件才是账号状态证据。**recv 超时也不能直接判定 NapCat 卡死**：模板心跳 30 秒，实测正常间隔可超过 30 秒。当前空闲 30 秒后直接发送只读 `get_status`，再等 10 秒；期间收到有效 JSON 对象即恢复正常等待，否则关闭连接、5 秒后重连。探测不能调用会等待接收线程回填的 `call_api`，否则死锁；探测次数不是故障次数。空帧立即按连接关闭处理。账号状态/API 响应优先在接收线程处理，生命周期落库及耗时业务走 worker。详情见 `docs/qq-transport.md`。
-- **发送确认 ≠ 消息送达/已读**：聊天和主动说话最多等待 30 秒确认，只有 `retcode=0` 才记成功；超时/断连可能已发送，通过 `delivery.SendUnconfirmedError` 记 warning/action「可能已送达，未获确认」，不自动重发（分段消息可能部分已送达）。明确的平台拒绝才记失败；NapCat sendMsg 超时（`retcode 1200` / message 含 `Timeout`）算「可能已送达」（`SendUnconfirmedError`）、不自动重发，别当「失败」。别让外层统一 catch 再改写成「主动说话失败」。`/qq/api.ok` 无确认或平台失败均为 false。API 请求固定原连接并保护 echo 序号；日志落库失败回退 stderr，不应杀死接收/工作线程。`Store.close` 也需持数据库锁。
+- **发送确认与异常分类**：NapCat `timeout.baseTimeout` 至少 30000ms，鱼脑 `SEND_CONFIRM_TIMEOUT=45` 秒，未知后 `SEND_LATE_GRACE=30` 秒补等；自身消息可在等待 API 时提前确认，不必等满超时。`SendUnconfirmedError` 表示已提交但结果未知，记 warning/action，禁止外层改写为「发送失败」或自动重发；`SendCancelledError` 表示回复过时/控制条件改变，正常取消记 info/action。明确平台拒绝才记失败。`/qq/api.ok` 仍要求成功 API 响应；发送侧确认不等于对方已读。API 请求固定原连接、echo 唯一，迟到成功响应按原 echo 关联。日志落库失败回退 stderr，不能杀死传输线程。详情见 `docs/qq-transport.md` 和 `docs/qq-delivery-fix-2026-10-29.md`。
+- **分段发送状态机不可回退**：`qq_outbox` 保存 queued/sending/unconfirmed/confirmed/rejected/cancelled；确认当前段后才继续尾段，未知段不重发。新会话消息、记忆版本/人设/平台开关/账号变化、停止信号或回复超时都会阻止旧尾段继续；较旧排队用户消息保留记忆，但已有更新消息时不再单独回复。进程重启将 sending→unconfirmed、queued→cancelled，不自动补发；窗口结束后迟到确认只补记状态/上下文，不恢复已取消尾段。`/qq/status.transport.delivery` 提供发送状态计数。
+- **自身消息回报必须校验目标**：OneBot 启用 `reportSelfMessage=true`、`enableForcePushEvent=true`、`messagePostFormat="array"`，`message_sent` 仅用于确认，不能作为用户消息生成回复。匹配要求自身账号、目标会话、时间、精确 text/face/at 内容及唯一候选，message_id 去重；图片不靠内容猜测关联。私聊自身回报的 user_id 可能是自身账号，应读 target_id。NapCat 4.18.41 调试日志在补 target_id 之前打印，网络推送前才由原始 peerUin 补入，不能据日志中缺目标就猜会话。同账号手工向同目标发送完全相同内容仍有不可完全区分的边界。
 - **戳一戳方向**：NapCat 私聊 `user_id` 是会话对象，`sender_id` 才是发起者、`target_id` 是目标；群聊以 `user_id` 为发起者。身份优先取事件 self_id，回退当前会话；缺字段记未知，别猜成被戳。group_id 缺失/0 为私聊，别输出「群 None」。自主戳动按 API 返回值区分确认/未知/拒绝，事件日志再记录实际方向。
 - **好友/加群审批需保留平台参数**：kind 为 friend/group 的 summary 是 JSON（summary、flag、sub_type），界面展示其中 summary。同意与拒绝都调用对应 OneBot API；数据库以 pending 条件更新，防重复执行。平台未确认或旧记录缺 flag 时记录 failed 并返回错误，不静默显示成功、不自动重试；旧申请需重新发起。不要把 publish 的纯文本正文改成这套 JSON。
 - **设置与人格重置契约**：PUT /llm 未提交的字段保留，明确提交空字符串表示清空（包括视觉模型回退）；不要恢复「所有空字符串都忽略」。人格重置同时清空 self_profile、life_state、长期记忆、短期上下文、名字和人设，防旧画像继续注入提示词；LLM 配置、审批等仍保留。
@@ -140,7 +158,8 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux sh -c 'sh /data/data/com.termux/
 - **表情包本地图库**：收到 GIF（image 段）→ `_collect_sticker` SHA256 去重、写 `~/dfy/stickers/`、**自动收集用受控情绪词当默认标签**（`STICKER_EMOTIONS`，vision 同时产出描述+情绪词）、**手动标签自由文本** → SQLite `stickers` 表；回复写 `[表情包:描述]` **双向子串匹配**（`get_sticker_by_tag`：X in tag or tag in X）、读本地文件 **base64 发图**。只收 GIF、`MAX_STICKERS=200` FIFO 删最旧（跳过 pinned）、教学句 cap 30（固定优先）。
 - **表情包 app 管理**：`/stickers`（GET 列表 / POST 添加 base64 或 url）、`/stickers/<id>`（PUT 改 tag/pinned、DELETE 删行删文件）、`/stickers/<id>/image`（出图）。app「设定→管理表情包」页（`sticker.dart`）可增删/固定/改标签（自由文本 + 情绪词快捷 chips）；相册上传用 `image_picker`（**已打破零第三方依赖**），选图不传宽高/quality 以保 GIF 动画。app 的 `_EMOTIONS` 只是 UI chips，Python `STICKER_EMOTIONS` 只用于自动收集。
 - **图片 URL 别当网页抓**：`qq_bot._extract_urls` 必须跳过 `image` 段（图片 `data.url` 不是网页，`_fetch_url_content` 抓了会把 JPEG 原始字节当正文塞进上下文、变一堆二进制垃圾）。图片内容是走 `_get_image_bytes` + `_vision_or_ocr` 的，不是 URL 抓取。
-- **NapCat 首次登录的 OneBot 配置是空的**：`onebot11_<uin>.json` 首次由 NapCat 自动生成时 `websocketServers` 是 `[]`（不监听 8081），所以扫码登录后 qq_bot 还连不上、一直「连接断开 5 秒重连」。**必须登录后写 8081 模板 + 重启 QQ 才生效**——`server.py:apply_onebot` 从配置目录文件名探测 uin（`_find_login_uin` 只认最近 `QQ_LOGIN_UIN_FRESH_SECONDS=600` 秒内生成的文件，旧文件跨会话残留不算「已登录」）、写 `~/dfy/onebot11.json` 模板、后台重启 QQ（`_restart_qq`），`_onebot_has_ws` 判断已配好就跳过。这是「账号在线」之前的最后一个坎。
+- **图片失败先查 Rkey 和原图缓存**：Rkey 返回格式错误/TLS 失败会使图片 URL 无效，`get_image` 也可能返回 file not found。`qq_media.py` 优先按合法 MD5 标识定位 QQ `nt_data/Pic/*/Ori` 原图并校验文件 MD5，再尝试消息 URL、API 文件/URL，API 后再查缓存；URL 失败不能跳过本地文件。容器路径只映射到限定缓存目录，检查路径逃逸、图片头与 20 MiB 上限。错误日志仅记录来源、错误类型和 HTTP/API 状态，不打印签名 URL、Rkey 或私有路径。外部 Rkey 服务故障本身未修复；无缓存且远程不可用的新图仍可能失败。
+- **OneBot 首次配置与升级迁移**：首次生成的 `onebot11_<uin>.json` 可能是空 `websocketServers`，需登录后配置 8081。`server.py:apply_onebot` 使用 `qq_config.delivery_config` 合并实际账号配置，保留令牌、其他连接和自定义设置，同时补齐自身消息回报/数组格式/事件推送及基础等待时间；不能仅看已有 8081 就跳过升级。只有合并结果变化才写文件并重启 QQ，重启优先传原账号做快捷登录。`_find_login_uin` 的文件名探测仍只认最近 `QQ_LOGIN_UIN_FRESH_SECONDS=600` 秒内生成的文件，旧残留不证明已登录。
 - **QQ 起不来的另一个坑：`/root/napcat` 目录不存在**：`_qq_start_cmd()` 把日志写到 `/root/napcat/qq.log`、`xvfb.log`，但 `setup-qq.sh` 没建这个目录 → 重定向失败、`./qq` 根本没跑（症状：部署页「未运行」）。现在 `_qq_start_cmd()` 开头 `mkdir -p /root/napcat` 兜底，`setup-qq.sh` 也建了 `$DEBIAN_ROOTFS/root/napcat`。
 - **NapCat 下载镜像会失效**：`setup-qq.sh` 里 GitHub 回退镜像 `ghproxy.net` 已死（502），现用 `gh-proxy.com` + `gh.llkk.cc` 双回退（`NAPCAT_ZIP_GH`/`NAPCAT_ZIP_GH2`）。这类第三方 GitHub 镜像经常挂，**下次 NapCat 下载失败先 `curl -I` 测这些 URL 还活着没**。linuxqq 的腾讯 CDN 固定版本 URL 也是「会过期」的老隐患。
 - **app 起鱼脑走 TermuxRunner**：`app/lib/termux.dart` 经 MethodChannel `dfy/termux`（`MainActivity.kt`）`startForegroundService(intent)` 触发 Termux RunCommandService（是服务、不是广播）。**AndroidManifest 必须有 `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_SPECIAL_USE` 权限**——之前「启动失败」就是漏了 FOREGROUND_SERVICE。冷启动命令前台阻塞、无 `&`（带 `&` 会被 Termux 清掉）。`run()` 发完即忘（起长驻 server.py 用）；`runAndWait()` 挂 `PendingIntent`（extra `com.termux.RUN_COMMAND_PENDING_INTENT`）+ 动态 BroadcastReceiver，回传 `result` bundle 的 `stdout`/`stderr`/`exitCode`（装环境等有限时长命令用）。**血泪：这个 PendingIntent 必须用 `FLAG_MUTABLE`，不能用 `FLAG_IMMUTABLE`**——IMMUTABLE 会让 Termux `send(code, resultIntent)` 的结果 extras 合并不进来，receiver 只能拿到 base intent 的 `sessionId`、拿不到 `result` bundle（`exitCode=-1` 静默误判失败）。结果 bundle 的 key 是 `"result"`（外层）、`"stdout"`/`"stderr"`/`"exitCode"`（内层）。
@@ -152,15 +171,22 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux sh -c 'sh /data/data/com.termux/
 - **Termux 没权限写 `/data/local/tmp`**（`drwxrwx--x shell:shell`，只有 adb/shell 能写；Termux 是普通 app UID 写不进去）。`setup-qq.sh` 下载 linuxqq/NapCat 必须写到 `$PREFIX/tmp`（`/data/data/com.termux/files/usr/tmp`），否则一下载就 Permission denied、脚本 `exit 1`——这正是「装 QQ 环境卡在安装 linuxqq」的根因。
 - **`Store.get_logs(category, level, limit)` 第二参是 `level` 不是 `limit`**：按位置传会把 limit 当 level 过滤（`WHERE level=40` 永远空）。所以 `get_logs("deploy", 40)` 是错的，要 `get_logs("deploy", limit=40)`。踩过：server.py 的 Deployer 状态、`/chat`、life.py 的「最近发生的事」都曾因此返回空。改 `get_logs` 一律用 `limit=` 关键字。
 - **`app/assets/fish/*.py` 要跟 `fish/` 同步**：那是「部署向导」写进 Termux 的嵌入副本。改完执行 `python tools/sync_fish_assets.py`，自动生成所有运行模块副本及 wizard.dart 清单；发布前 `python tools/sync_fish_assets.py --check`，不要只校验部分文件。`app/assets/deploy/` 同理同步 `setup-qq.sh`/`setup-fish.sh`/`onebot11.json`（`setup-fish.sh` 是装 Python 环境的分步脚本，`deploy/` 根目录也要留一份）。
-- **版本号**：改 `app/` 代码或嵌入资源都 bump `app/pubspec.yaml` 的 `version`（x.y.z+n）。2026-10-28 当前为 `1.0.38+52`；APK 路径 `app/build/app/outputs/flutter-apk/app-release.apk`。
+- **版本号**：改 `app/` 代码或嵌入资源都 bump `app/pubspec.yaml` 的 `version`（x.y.z+n）。2026-10-29 当前为 `1.0.42+56`；APK 路径 `app/build/app/outputs/flutter-apk/app-release.apk`。
 - **不入库**：`fish/config.toml`、`fish/fish.db`、`.api-token`、`app/android/key.properties`、keystore、`__pycache__/`、构建输出（完整清单见 `.gitignore`）。
+
+## 最近验证（2026-10-29）
+
+- `1.0.42+56` 已覆盖安装连接的手机，鱼脑与实际 OneBot 配置已更新；APK 内 15 个运行模块及模板逐字节匹配源码，手机运行源码也与暂存版本一致。
+- 142 项 Python 回归、14 项 Flutter 测试与 Flutter 静态分析通过。真机故障历史图片恢复读取成功；更新前后记忆均为 407 条，审批条数与用户配置保持，SQLite quick_check 为 ok；QQ 在线、接收/工作线程存活、队列为 0。
+- 此次没有向 QQ 联系人发送测试消息，真实网络下的新一轮多段聊天、完整 UI 新装/升级流程和长期模型效果仍未验证。不能把部署健康检查或模拟确认测试当作真实聊天端到端验证。
+- 原因、边界和回退说明见 `docs/qq-media-send-diagnosis-2026-10-29.md`、`docs/qq-delivery-fix-2026-10-29.md` 与 `docs/releases/v1.0.42.md`。
 
 ## 待做（详见计划文件）
 
 - `fish/` 里 `bilibili.py` 还没写（B站签到/发布）。小黑盒 `heybox.py` 已写（签到/抽奖/领券/发帖/评论/浏览；发帖/评论走审批，同意后 `server.execute_approval` 真正执行；读结果回喂走 `life.decide_action` 的 `extra_context`）。
 - 部署向导端到端（阶段 B）：**已在真机 arm64 上走通**（装鱼脑 → 装 QQ → 扫码登录 → OneBot 配置 → 账号在线）。剩余：结果回传依赖较新 Termux（老 Termux 会静默失败）；QQ 登录持久化（下面那条）；B站还没接；小黑盒已接（token 走 app「设定」页配置、热生效，`/heybox` PUT）；凭据还差「手机 app 版 pkey」（网页版/加速器的 pkey 不被 app 接口认，签到会「请重新登录」）。
 - QQ 登录持久化（老硬伤）。
-- 记忆 v2 自动验证：Python 41 项、Flutter 9 项通过，Flutter 分析无问题；边界与资料见 `docs/memory-system.md`。尚未做真实模型长期效果评测。先前真机安装验证的是 1.0.30+44；新 APK 的构建不代表已经在手机部署或迁移数据库。
+- 记忆 v2 与人格成长仍需真实模型长期效果评测；本轮自动验证及真机部署状态见「最近验证」，详细边界见 `docs/memory-system.md`。
 - 工具多了加动态路由（`select_tools` 现在全量返回）。
 
 ## 注意

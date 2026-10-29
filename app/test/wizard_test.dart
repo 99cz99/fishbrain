@@ -6,6 +6,13 @@ import 'package:dfy_app/models.dart';
 import 'package:dfy_app/pages/wizard.dart';
 
 class WizardApi extends ApiClient {
+  int applied = 0;
+  @override
+  Future<Map<String, dynamic>> applyOnebot() async {
+    applied++;
+    return {'ok': true, 'already': true};
+  }
+
   @override
   Future<Status> status() async => Status.fromJson({});
 }
@@ -49,6 +56,8 @@ void main() {
       await tester.tap(find.text('开始装鱼脑'));
       await tester.pumpAndSettle();
       expect(find.text('鱼脑更新完成'), findsOneWidget);
+      expect(api.applied, 1);
+      expect(commands.any((c) => c.contains('.update/onebot11.json')), isTrue);
       final checked = commands.indexWhere((c) => c.contains('py_compile'));
       final stopped = commands.indexWhere((c) => c.contains('pkill'));
       final activated = commands.indexWhere((c) => c.startsWith('cp '));

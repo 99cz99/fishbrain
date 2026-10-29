@@ -52,28 +52,33 @@ class Life:
             "last_wake_at": d.get("last_wake_at", 0.0),
         }
 
-    def _save(self, next_wake_at, last_wake_at, mood_update=None):
+    def _save(self, next_wake_at, last_wake_at, mood_update=None, revision=None, epoch=None):
         # 只在 mood_update 有值时写 valence/arousal/dominance/mood_at；否则保留原值（衰减只读时算、不落盘）
-        raw = self.store.get_settings().get("life_state") or {}
-        d = dict(raw)
-        d["next_wake_at"] = next_wake_at
-        d["last_wake_at"] = last_wake_at
-        if mood_update:
-            d.update(mood_update)
-        self.store.set_life_state(d)
+        with self.store._lock:
+            if (revision is not None and revision != (self.store.get_setting_raw('life_state_revision') or 0)
+                    or epoch is not None and epoch != (self.store.get_setting_raw('memory_epoch') or 0)):
+                return False
+            d = dict(self.store.get_settings().get('life_state') or {})
+            d.update(next_wake_at=next_wake_at, last_wake_at=last_wake_at)
+            if mood_update:
+                d.update(mood_update)
+            self.store.set_life_state(d)
+            return True
 
     def next_wake_at(self):
         return self.state()["next_wake_at"]
 
     def wake(self):
         """叫醒：把下次醒来时间设为现在，让心跳立刻触发。"""
-        st = self.state()
-        self._save(time.time(), st["last_wake_at"])
+        with self.store._lock:
+            st = self.state()
+            self._save(time.time(), st["last_wake_at"])
 
     # ---- 心跳（两段式：先定本能，再定动作）----
     def heartbeat(self):
         """第一段：定心情 + 本能（drive）+ 下次醒来时间。返回 {mood, drive, next_wake}。"""
         now = time.time()
+        start_epoch = self.store.get_setting_raw('memory_epoch') or 0
         st = self.state()
         # 情感传染：回忆情绪明显的记忆，对当前 valence 做一次轻微 nudge
         mems = self.store.get_memories(limit=20, kinds=('fact','belief','experience','episode'), current_only=True)
@@ -87,13 +92,19 @@ class Life:
         ) * nudge_k
         contagion = max(-nudge_cap, min(nudge_cap, contagion))
         if contagion:
-            new_valence = max(-1.0, min(1.0, float(st.get("valence", 0.0)) + contagion))
-            raw = self.store.get_settings().get("life_state") or {}
-            d = dict(raw) if isinstance(raw, dict) else {}
-            d["valence"] = new_valence
-            d["mood_at"] = now
-            self.store.set_life_state(d)
+            with self.store._lock:
+                if start_epoch != (self.store.get_setting_raw('memory_epoch') or 0):
+                    return {'mood': self.state()['mood'], 'drive':'none', 'next_wake':0}
+                d = dict(self.store.get_settings().get('life_state') or {})
+                current = self.store.get_life_state()
+                d.update({k: current[k] for k in ('valence','arousal','dominance','attribution')})
+                d['valence'] = max(-1., min(1., current['valence'] + contagion))
+                d['mood_at'] = time.time()
+                self.store.set_life_state(d)
+        with self.store._lock:
             st = self.state()
+            revision = self.store.get_setting_raw('life_state_revision') or 0
+            epoch = self.store.get_setting_raw('memory_epoch') or 0
         last_mood = st.get("mood", "")
         mood = last_mood
         valence = st.get("valence", 0.0)
@@ -146,7 +157,8 @@ class Life:
             self.store.add_log("error", "life", f"心跳异常，兜底发呆: {e}")
 
         next_wake_at = now + nxt * 60
-        self._save(next_wake_at, now, mood_update)
+        if not self._save(next_wake_at, now, mood_update, revision, epoch):
+            return {'mood': self.state()['mood'], 'drive': 'none', 'next_wake': 0}
         if mood_update:
             mood = self.store.get_life_state().get("mood", mood)
         return {"mood": mood, "drive": drive, "next_wake": nxt}
@@ -156,6 +168,7 @@ class Life:
         extra_context：读结果回喂——把刚浏览到的内容拼进 prompt，让 LLM 决定后续。"""
         try:
             settings = self.store.get_settings()
+            epoch = self.store.get_setting_raw('memory_epoch') or 0
             names = {t['function']['name'] for t in tools}
             private = 'send_message' in names and (drive == '陪伴' or bool(self._pending_context(settings)))
             if private:
@@ -164,6 +177,10 @@ class Life:
             prompt = self._action_prompt(settings, drive, extra_context, target_scope)
             result = self.brain.chat_with_tools([{"role": "system", "content": render_identity(settings)}, {"role": "user", "content": prompt}], tools)
             allowed = {t['function']['name'] for t in tools}
+            if epoch != (self.store.get_setting_raw('memory_epoch') or 0):
+                return []
+            if render_identity(settings) != render_identity(self.store.get_settings()):
+                return []
             return [tc for tc in (result.get("tool_calls", []) or []) if tc.get('name') in allowed]
         except Exception as e:
             self.store.add_log("error", "life", f"行动决策异常: {e}")

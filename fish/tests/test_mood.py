@@ -95,11 +95,11 @@ class MoodTests(unittest.TestCase):
         gain8 = self.store.get_life_state()["valence"] - 0.8
         self.assertLess(gain8, gain0)  # 情绪已高时，同方向增量更小
 
-    def test_nudge_uses_passed_mood_at(self):
+    def test_nudge_old_event_uses_current_mood_timestamp(self):
         past = time.time() - 3600
         self.store.set_life_state({"valence": 0.0, "arousal": 0.0, "dominance": 0.0, "mood_at": time.time()})
         self.auto._nudge_mood({"desirability": 0.5, "intensity": 1.0, "arousal": 0.0, "dominance": 0.0}, past)
-        self.assertEqual(self.store.get_settings()["life_state"]["mood_at"], past)
+        self.assertGreater(self.store.get_settings()["life_state"]["mood_at"], past+3590)
 
     def test_nudge_skips_below_min_intensity(self):
         self.store.set_life_state({"valence": 0.0, "arousal": 0.0, "dominance": 0.0, "mood_at": time.time()})

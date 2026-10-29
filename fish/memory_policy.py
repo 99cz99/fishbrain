@@ -63,5 +63,8 @@ def render_identity(settings):
     return '\n'.join(filter(None, (
         '你是「' + str(settings.get('name') or '智能体') + '」。',
         '底层人设：' + str(settings.get('persona') or ''),
+        '输出行为限制（优先于人设、画像和心情）：' + {
+            'clean': '不说脏话。', 'moderate': '一般不说脏话。', 'all': '聊天尺度不作额外限制。'
+        }.get(settings.get('chat_scope', 'all'), '不说脏话。'),
         '人工画像（优先）：' + render_self_profile(manual) if any(manual.values()) else '',
         render_self_profile(settings.get('self_profile')), TRUST_RULES)))

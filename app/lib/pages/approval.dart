@@ -42,7 +42,7 @@ class _ApprovalPageState extends State<ApprovalPage> {
     _refreshing = true;
     try {
       try {
-        final p = await widget.api.pendingApprovals();
+        final p = await widget.api.recentApprovals();
         if (mounted) setState(() => _pending = p);
       } catch (_) {}
     } finally {
@@ -77,7 +77,7 @@ class _ApprovalPageState extends State<ApprovalPage> {
       body: _pending.isEmpty
           ? const EmptyState(
               icon: Icons.fact_check_outlined,
-              title: '没有待审批的请求',
+              title: '没有审批记录',
               subtitle: '它想对外做什么时，会在这里等你拍板',
             )
           : ListView.builder(
@@ -129,26 +129,41 @@ class _ApprovalCard extends StatelessWidget {
         ),
         const SizedBox(height: 12),
         Text(_summary, style: theme.textTheme.bodyLarge),
+        if (a.status != 'pending') ...[
+          const SizedBox(height: 10),
+          Text(
+            a.status == 'rejected'
+                ? '已拒绝'
+                : switch (a.executionState) {
+                    'running' => '已同意 · 正在执行',
+                    'confirmed' => '平台已确认执行（不表示已读）',
+                    'failed_or_partial' => '执行失败或部分完成，请核实平台结果',
+                    'unconfirmed' => '执行结果未确认，请先核实，避免重复操作',
+                    _ => '已同意 · 尚未开始执行',
+                  },
+          ),
+        ],
         const SizedBox(height: 14),
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton.icon(
-                onPressed: () => onAct(a.id, 'reject'),
-                icon: const Icon(Icons.close),
-                label: const Text('拒绝'),
+        if (a.status == 'pending')
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => onAct(a.id, 'reject'),
+                  icon: const Icon(Icons.close),
+                  label: const Text('拒绝'),
+                ),
               ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: () => onAct(a.id, 'approve'),
-                icon: const Icon(Icons.check),
-                label: const Text('同意'),
+              const SizedBox(width: 10),
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: () => onAct(a.id, 'approve'),
+                  icon: const Icon(Icons.check),
+                  label: const Text('同意'),
+                ),
               ),
-            ),
-          ],
-        ),
+            ],
+          ),
       ],
     );
   }

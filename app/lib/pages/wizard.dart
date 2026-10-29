@@ -207,6 +207,9 @@ class _WizardPageState extends State<WizardPage> {
         'memory_system.py': 'assets/fish/memory_system.py',
         'personality.py': 'assets/fish/personality.py',
         'qq_bot.py': 'assets/fish/qq_bot.py',
+        'qq_config.py': 'assets/fish/qq_config.py',
+        'qq_delivery.py': 'assets/fish/qq_delivery.py',
+        'qq_media.py': 'assets/fish/qq_media.py',
         'server.py': 'assets/fish/server.py',
         'weather.py': 'assets/fish/weather.py',
       };
@@ -239,6 +242,11 @@ class _WizardPageState extends State<WizardPage> {
       if (!await _termux.writeFile('$_stageDir/run-fish.sh', rf)) {
         failed++;
         _logLn('写入 run-fish.sh 失败');
+      }
+      final onebot = await _loadAsset('assets/deploy/onebot11.json');
+      if (!await _termux.writeFile('$_stageDir/onebot11.json', onebot)) {
+        failed++;
+        _logLn('写入 OneBot 配置模板失败');
       }
       if (failed > 0) {
         _logLn('有文件写入失败：Termux 没装或权限没授（回上一步看「环境检查」）');
@@ -278,7 +286,7 @@ class _WizardPageState extends State<WizardPage> {
         _logLn('代码校验失败，现有鱼脑继续运行');
         return;
       }
-      _logLn('校验通过，只重启鱼脑，保留 QQ 登录和已有数据…');
+      _logLn('校验通过，更新鱼脑并保留已有数据；QQ 配置升级时会短暂重连…');
       final stopped = await _termux.runAndWait(
         "pkill -f '[r]un-fish.sh'; pkill -f '[s]erver.py'; rm -f $_dfyDir/.fish.pid",
         timeoutMs: 10000,
@@ -288,7 +296,7 @@ class _WizardPageState extends State<WizardPage> {
         return;
       }
       final copied = await _termux.runAndWait(
-        'cp $_stageDir/*.py $_dfyDir/ && cp $_stageDir/setup-fish.sh $_stageDir/run-fish.sh $_dfyDir/',
+        'cp $_stageDir/*.py $_dfyDir/ && cp $_stageDir/setup-fish.sh $_stageDir/run-fish.sh $_stageDir/onebot11.json $_dfyDir/',
         timeoutMs: 30000,
       );
       if (copied?.ok != true) {
@@ -317,6 +325,18 @@ class _WizardPageState extends State<WizardPage> {
       try {
         await widget.api.status();
         _logLn('鱼脑已在线 ✅');
+        if (_upgrading) {
+          try {
+            final result = await widget.api.applyOnebot();
+            _logLn(
+              result['restarting'] == true
+                  ? 'QQ 发送配置已升级，正在重连；未知结果的旧消息不会自动重发'
+                  : 'QQ 发送配置已是最新',
+            );
+          } catch (e) {
+            _logLn('鱼脑已更新，QQ 配置未升级：$e。登录后可在部署页重新应用配置。');
+          }
+        }
         if (mounted) setState(() => _step = _upgrading ? 4 : 2);
         return;
       } catch (_) {}

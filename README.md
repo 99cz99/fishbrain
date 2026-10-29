@@ -2,7 +2,7 @@
 
 一个 24h 在线、像真人一样的 AI 朋友（赛博生命体），住在安卓手机里，通过协议/API 使用 QQ 和小黑盒。B站接入仍在规划中。
 
-最新版 **v1.0.40**（Android 8.0+）：[下载 APK](https://github.com/99cz99/fishbrain/releases/latest/download/app-release.apk) · [版本与升级说明](https://github.com/99cz99/fishbrain/releases/latest)。
+当前版本 **v1.0.42**（Android 8.0+）。公开安装包入口：[下载 APK](https://github.com/99cz99/fishbrain/releases/latest/download/app-release.apk) · [版本与升级说明](https://github.com/99cz99/fishbrain/releases/latest)。
 
 ## 架构
 
@@ -50,7 +50,7 @@
 2. 在「部署」页执行鱼脑更新。**仅更新 APK 不会替换已经运行的 Python 鱼脑**；无需重装 QQ 或清除记忆。
 3. 等待更新完成，再检查「状态」、QQ 连接及「记忆」页面。
 
-本版新增记忆策略迁移：迁移前会在手机备份 SQLite 数据库，随后脱敏旧内容中的常见凭据、隔离含凭据的长期认识，保留其他记忆及原有隔离记录。备份仍含原始私人数据，应留在本机妥善保管；恢复方法见[记忆系统文档](docs/memory-system.md)。
+升级时如需执行旧版本记忆策略迁移：迁移前会在手机备份 SQLite 数据库，随后脱敏旧内容中的常见凭据、隔离含凭据的长期认识，保留其他记忆及原有隔离记录。备份仍含原始私人数据，应留在本机妥善保管；恢复方法见[记忆系统文档](docs/memory-system.md)。
 
 语义理解、同义查询和长期人格质量仍需真实交流验证；目前不包含向量检索或公开基准成绩。
 
@@ -76,10 +76,10 @@ APK 输出至 `app/build/app/outputs/flutter-apk/app-release.apk`。Python 运�
 
 ## 安装包
 
-最新 APK 与 SHA-256 校验文件见 [Releases](https://github.com/99cz99/fishbrain/releases/latest)。当前版本为 `1.0.40+54`，更新内容见[发布说明](docs/releases/v1.0.40.md)。
+已发布 APK 与 SHA-256 校验文件见 [Releases](https://github.com/99cz99/fishbrain/releases/latest)。当前版本为 `1.0.42+56`，更新内容见[发布说明](docs/releases/v1.0.42.md)。
 
 ## 文档
 
 - [记忆系统、隐私范围、成长与迁移](docs/memory-system.md)
-- [v1.0.40 发布说明](docs/releases/v1.0.40.md)
+- [v1.0.42 发布说明](docs/releases/v1.0.42.md)
 - [架构、开发约定与部署说明](CLAUDE.md)

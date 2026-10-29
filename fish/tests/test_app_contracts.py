@@ -68,6 +68,7 @@ class AppContractTests(unittest.TestCase):
     def test_friend_request_executes_both_decisions(self):
         fish = Fish.__new__(Fish)
         fish.store = Mock()
+        fish.store.get_settings.return_value = {'enabled_platforms': ['qq']}
         fish.store.get_approval.return_value = {'kind': 'friend', 'summary': '{"flag":"request-id"}'}
         fish.qq_bot = Mock()
         fish.qq_bot.set_friend_add_request.return_value = {'retcode': 0}
@@ -78,6 +79,7 @@ class AppContractTests(unittest.TestCase):
     def test_legacy_request_does_not_fake_success(self):
         fish = Fish.__new__(Fish)
         fish.store = Mock()
+        fish.store.get_settings.return_value = {'enabled_platforms': ['qq']}
         fish.store.get_approval.return_value = {'kind': 'friend', 'summary': 'legacy text'}
         with self.assertRaises(ValueError):
             fish.execute_approval(1)
