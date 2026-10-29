@@ -192,13 +192,15 @@ class MemoryTests(unittest.TestCase):
             self.store.apply_episode_result(self.store.pending_episode_batch(), {})
         self.assertEqual(len(self.store.pending_episode_batch()), 1)
 
-    def test_private_beliefs_do_not_enter_global_personality(self):
+    def test_private_belief_text_is_not_directly_published_as_personality(self):
         a = self.store.add_memory('experience', 'self', '尝试说话', entity_id='self', scope='owner')
         b = self.store.add_memory('experience', 'self', '发送未确认', entity_id='self', scope='owner')
         self.store.add_reflection('可能关心别人', [a,b])
         brain = Mock()
+        brain.chat.return_value = json.dumps({'traits': []})
         Autonomy(self.store, brain).distill_self_profile(force=True)
-        brain.chat.assert_not_called()
+        self.assertEqual(self.store.get_settings()['self_profile']['values'], [])
+        self.assertEqual(self.store.personality_traits(), [])
 
     def test_pending_events_and_claim_survive_restart(self):
         with tempfile.TemporaryDirectory() as folder:

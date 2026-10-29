@@ -7,6 +7,7 @@ import time
 
 import weather
 from memory import render_self_profile, format_memory_line, mood_param, MEMORY_EMOTION_NUDGE_K, MEMORY_EMOTION_NUDGE_CAP
+from memory_policy import TRUST_RULES, render_identity, evidence_data, data_message
 
 # 下次心跳间隔的软边界（分钟）：防它永睡或刷屏。这是安全护栏，不是「闹钟」。
 MIN_NEXT_MIN = 10
@@ -36,6 +37,7 @@ class Life:
     def __init__(self, store, brain):
         self.store = store
         self.brain = brain
+        self._context_ids = []
 
     # ---- 状态（持久化在 memory.Store 的 life_state）----
     def state(self):
@@ -74,7 +76,7 @@ class Life:
         now = time.time()
         st = self.state()
         # 情感传染：回忆情绪明显的记忆，对当前 valence 做一次轻微 nudge
-        mems = [m for m in self.store.get_memories(limit=20) if m["kind"] != "intention"]
+        mems = self.store.get_memories(limit=20, kinds=('fact','belief','experience','episode'), current_only=True)
         mp_settings = self.store.get_settings()
         nudge_k = mood_param(mp_settings, "emotion_nudge_k", MEMORY_EMOTION_NUDGE_K)
         nudge_cap = mood_param(mp_settings, "emotion_nudge_cap", MEMORY_EMOTION_NUDGE_CAP)
@@ -105,7 +107,7 @@ class Life:
         try:
             settings = self.store.get_settings()
             prompt = self._prompt(settings, st)
-            result = self.brain.chat_with_tools([{"role": "user", "content": prompt}], self._core_tools())
+            result = self.brain.chat_with_tools([{"role": "system", "content": render_identity(settings)}, {"role": "user", "content": prompt}], self._core_tools())
             for tc in result.get("tool_calls", []) or []:
                 name = tc.get("name")
                 args = tc.get("arguments", {}) or {}
@@ -154,22 +156,29 @@ class Life:
         extra_context：读结果回喂——把刚浏览到的内容拼进 prompt，让 LLM 决定后续。"""
         try:
             settings = self.store.get_settings()
-            prompt = self._action_prompt(settings, drive, extra_context)
-            result = self.brain.chat_with_tools([{"role": "user", "content": prompt}], tools)
-            return result.get("tool_calls", []) or []
+            names = {t['function']['name'] for t in tools}
+            private = 'send_message' in names and (drive == '陪伴' or bool(self._pending_context(settings)))
+            if private:
+                tools = [t for t in tools if t['function']['name'] in ('send_message','like_master','poke_master')]
+            target_scope = 'owner' if private else 'global'
+            prompt = self._action_prompt(settings, drive, extra_context, target_scope)
+            result = self.brain.chat_with_tools([{"role": "system", "content": render_identity(settings)}, {"role": "user", "content": prompt}], tools)
+            allowed = {t['function']['name'] for t in tools}
+            return [tc for tc in (result.get("tool_calls", []) or []) if tc.get('name') in allowed]
         except Exception as e:
             self.store.add_log("error", "life", f"行动决策异常: {e}")
             return []
 
-    def _action_prompt(self, settings, drive, extra_context=None):
+    def _action_prompt(self, settings, drive, extra_context=None, target_scope='global'):
         name = (settings.get("name") or "").strip()
         intro = f"你是「{name}」。" if name else "你是一个活着的智能体。"
         sp_text = render_self_profile(settings.get("self_profile"))
-        lines = [intro]
-        if sp_text:
-            lines.append(sp_text)
+        lines = [render_identity(settings)]
         lines.append(f"你现在偏向「{drive}」这个天性面。")
-        lines.append(self._pending_context(settings))
+        rows = self.store.action_context(target_scope, self._context_ids)
+        lines.append(data_message({'target_scope': target_scope, 'trigger_evidence': evidence_data(rows)})['content'])
+        if target_scope == 'owner':
+            lines.append(self._pending_context(settings))
         if extra_context:
             lines.append(str(extra_context))
         lines.append("用工具做一件具体的事吧（也可以什么都不做，那就不调工具）。")
@@ -198,7 +207,8 @@ class Life:
         recent = self.store.get_logs("status", limit=8)
         recent_text = "\n".join(f"- [{r['ts']}] {r['message']}" for r in recent) or "（还没有发生过什么）"
 
-        mems = [m for m in self.store.get_memories(limit=20) if m["kind"] != "intention"][:8]
+        mems = self.store.get_memories(limit=8, kinds=('fact','belief','experience','episode'), current_only=True)
+        self._context_ids = [m['id'] for m in mems]
         mem_text = "\n".join(format_memory_line(m) for m in mems) or "（还没有记忆）"
 
         platforms = "、".join(settings.get("enabled_platforms", []) or []) or "暂无"
@@ -214,8 +224,7 @@ class Life:
         sp_text = render_self_profile(settings.get("self_profile"))
 
         return "\n".join([
-            intro,
-            sp_text,
+            render_identity(settings),
             f"现在是 {_now_str()}。{weather_part}",
             f"距离你上次醒来已经 {since_wake}。{mood_line}",
             mood_num,

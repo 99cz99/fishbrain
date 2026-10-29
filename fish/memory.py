@@ -13,6 +13,7 @@ import threading
 import time
 
 from memory_system import MemorySystem
+from memory_policy import TRUST_RULES, person_code, redact_secrets, CONTROL_KEYS
 
 # 软设定默认值（代码只给中性占位，用户在 app 里改）
 DEFAULT_SETTINGS = {
@@ -163,7 +164,9 @@ def emotion_label(emotion):
 def format_memory_line(m, with_kind=False):
     """把一条记忆格式化成一行，情绪明显时带标注。"""
     kind = f"[{m.get('kind', '')}] " if with_kind else ""
-    line = f"- {kind}{m.get('subject', '')}: {m.get('content', '')}"
+    line = (f"- {kind}[{person_code(m.get('entity_id'))} 范围={m.get('scope', '未知')} "
+            f"时间={m.get('created_at', '未知')} #{m.get('id', '?')}] "
+            f"{m.get('subject', '')}: {redact_secrets(m.get('content', ''))}")
     emo = emotion_label(m.get("emotion", 0))
     if emo:
         line += f"（当时{emo}）"
@@ -295,11 +298,40 @@ class Store(MemorySystem):
                     self._conn.backup(backup)
                 finally:
                     backup.close()
+        if columns and str(db_path) != ':memory:' and not self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='memory_terms'").fetchone():
+            backup_path = str(db_path) + '.pre-memory-policy-v3.db'
+            if not os.path.exists(backup_path):
+                backup = sqlite3.connect(backup_path)
+                try:
+                    self._conn.backup(backup)
+                finally:
+                    backup.close()
         self._conn.executescript(SCHEMA)
         with self._conn:
             self._conn.execute("BEGIN")
             self._migrate()
         self._lock = threading.RLock()  # 可重入：add_memory/update_sticker 持锁时也会调 get_* 读方法
+        self._apply_privacy_migration()
+
+    def _apply_privacy_migration(self):
+        from memory_policy import contains_secret
+        with self._lock, self._conn:
+            if self.get_setting_raw('memory_policy_version') == 3:
+                return
+            for mid, kind, content in self._conn.execute("SELECT id,kind,content FROM memories WHERE status!='deleted'").fetchall():
+                cleaned = redact_secrets(content)
+                if cleaned != content:
+                    self._conn.execute('UPDATE memories SET content=? WHERE id=?', (cleaned, mid))
+                    self._index_memory(mid, cleaned)
+                    if kind in ('fact','belief','intention'):
+                        self._invalidate_dependents([mid], 'quarantined')
+            for table, column in (('short_term','content'), ('logs','message')):
+                for rid, text in self._conn.execute(f'SELECT id,{column} FROM {table}').fetchall():
+                    cleaned = redact_secrets(text)
+                    if cleaned != text:
+                        self._conn.execute(f'UPDATE {table} SET {column}=? WHERE id=?', (cleaned, rid))
+            self._conn.execute("INSERT OR REPLACE INTO settings VALUES('memory_policy_version','3')")
 
     def _migrate(self):
         # 老库补 platform 列
@@ -341,10 +373,36 @@ class Store(MemorySystem):
                     d[key] = merged
                 else:
                     d[key] = value
+            d['manual_self_profile'] = d.get('self_profile') or {}
+            d['self_profile'] = self._effective_profile(d['manual_self_profile'])
+            d['self_profile_revision'] = self.profile_revision({'profile': d['self_profile'], 'persona': d.get('persona', ''),
+                                                               'manual': d['manual_self_profile'], 'vetoes': self.personality_vetoes()})
             return d
+
+    def apply_manual_settings(self, updates):
+        """Persist explicit user control and its lock atomically with respect to evolution."""
+        with self._lock:
+            locked = set(self.get_setting_raw('user_locked_settings') or [])
+            locked.update(CONTROL_KEYS.intersection(updates))
+            if locked:
+                self.set_setting('user_locked_settings', sorted(locked))
+            self.set_settings(updates)
+
+    def apply_evolved_settings(self, updates, snapshot):
+        with self._lock:
+            current = self.get_settings()
+            locked = set(current.get('user_locked_settings') or [])
+            # Existing restrictions are protected even before the first editor save.
+            for key, value in updates.items():
+                if (key in locked or current.get(key) != snapshot.get(key)
+                        or key in ('approve_money', 'approve_publish', 'midnight_ok', 'enabled_platforms')):
+                    continue
+                self.set_setting(key, value)
 
     def set_setting(self, key, value):
         with self._lock:
+            if key == 'self_profile':
+                self._conn.execute("DELETE FROM personality_traits")
             self._conn.execute(
                 "INSERT INTO settings(key, value) VALUES(?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -418,6 +476,7 @@ class Store(MemorySystem):
         self.set_setting("life_state", d)
 
     def add_log(self, level, category, message):
+        message = redact_secrets(message)
         with self._lock:
             self._conn.execute(
                 "INSERT INTO logs(ts, level, category, message) VALUES(?, ?, ?, ?)",
@@ -444,7 +503,7 @@ class Store(MemorySystem):
         with self._lock:
             self._conn.execute(
                 "INSERT INTO short_term(session, role, content, platform, ts) VALUES(?, ?, ?, ?, ?)",
-                (session, role, content, platform, _now()),
+                (session, role, redact_secrets(content), platform, _now()),
             )
             self._conn.execute(
                 "DELETE FROM short_term WHERE session=? AND id NOT IN "

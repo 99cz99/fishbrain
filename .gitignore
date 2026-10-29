@@ -3,6 +3,7 @@ fish/config.toml
 fish/*.db
 **/.api-token
 **/*.pre-memory-v2.db
+**/*.pre-memory-policy-v3.db
 app/android/key.properties
 *.jks
 *.keystore

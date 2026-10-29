@@ -1,11 +1,13 @@
 # life.py — Fishbrain 的「心」：心跳循环，让 LLM 自由决定想干嘛
 # 核心思想：代码不做决定，只喂「当下」+ 问一句；LLM 自由回答（包括发呆 action=nothing）。
-# 心情 = 文字标签 + valence/arousal 数值（读时按指数衰减回基线）；下次醒来的间隔由它自己定。
+# 心情 = valence/arousal/dominance 三维数值（读时按指数衰减回基线，mood 标签由数值派生）；下次醒来的间隔由它自己定。
 import json
+import math
 import time
 
 import weather
-from memory import render_self_profile
+from memory import render_self_profile, format_memory_line, mood_param, MEMORY_EMOTION_NUDGE_K, MEMORY_EMOTION_NUDGE_CAP
+from memory_policy import TRUST_RULES, render_identity, evidence_data, data_message
 
 # 下次心跳间隔的软边界（分钟）：防它永睡或刷屏。这是安全护栏，不是「闹钟」。
 MIN_NEXT_MIN = 10
@@ -35,6 +37,7 @@ class Life:
     def __init__(self, store, brain):
         self.store = store
         self.brain = brain
+        self._context_ids = []
 
     # ---- 状态（持久化在 memory.Store 的 life_state）----
     def state(self):
@@ -43,12 +46,14 @@ class Life:
             "mood": d.get("mood", ""),
             "valence": d.get("valence", 0.0),
             "arousal": d.get("arousal", 0.0),
+            "dominance": d.get("dominance", 0.0),
+            "attribution": d.get("attribution", 0.0),
             "next_wake_at": d.get("next_wake_at", 0.0),
             "last_wake_at": d.get("last_wake_at", 0.0),
         }
 
     def _save(self, next_wake_at, last_wake_at, mood_update=None):
-        # 只在 mood_update 有值时写 mood/valence/arousal/mood_at；否则保留原值（衰减只读时算、不落盘）
+        # 只在 mood_update 有值时写 valence/arousal/dominance/mood_at；否则保留原值（衰减只读时算、不落盘）
         raw = self.store.get_settings().get("life_state") or {}
         d = dict(raw)
         d["next_wake_at"] = next_wake_at
@@ -70,10 +75,31 @@ class Life:
         """第一段：定心情 + 本能（drive）+ 下次醒来时间。返回 {mood, drive, next_wake}。"""
         now = time.time()
         st = self.state()
+        # 情感传染：回忆情绪明显的记忆，对当前 valence 做一次轻微 nudge
+        mems = self.store.get_memories(limit=20, kinds=('fact','belief','experience','episode'), current_only=True)
+        mp_settings = self.store.get_settings()
+        nudge_k = mood_param(mp_settings, "emotion_nudge_k", MEMORY_EMOTION_NUDGE_K)
+        nudge_cap = mood_param(mp_settings, "emotion_nudge_cap", MEMORY_EMOTION_NUDGE_CAP)
+        contagion = sum(
+            float(m.get("emotion", 0) or 0) * (float(m.get("importance", 5) or 5) / 10.0)
+            * math.exp(-max(0.0, now - float(m.get("occurred_at", now) or now)) / 86400.0)
+            for m in mems if abs(float(m.get("emotion", 0) or 0)) >= 0.3
+        ) * nudge_k
+        contagion = max(-nudge_cap, min(nudge_cap, contagion))
+        if contagion:
+            new_valence = max(-1.0, min(1.0, float(st.get("valence", 0.0)) + contagion))
+            raw = self.store.get_settings().get("life_state") or {}
+            d = dict(raw) if isinstance(raw, dict) else {}
+            d["valence"] = new_valence
+            d["mood_at"] = now
+            self.store.set_life_state(d)
+            st = self.state()
         last_mood = st.get("mood", "")
         mood = last_mood
         valence = st.get("valence", 0.0)
         arousal = st.get("arousal", 0.0)
+        dominance = st.get("dominance", 0.0)
+        attribution = st.get("attribution", 0.0)
         mood_update = None
         drive = "none"
         nxt = 60
@@ -81,12 +107,11 @@ class Life:
         try:
             settings = self.store.get_settings()
             prompt = self._prompt(settings, st)
-            result = self.brain.chat_with_tools([{"role": "user", "content": prompt}], self._core_tools())
+            result = self.brain.chat_with_tools([{"role": "system", "content": render_identity(settings)}, {"role": "user", "content": prompt}], self._core_tools())
             for tc in result.get("tool_calls", []) or []:
                 name = tc.get("name")
                 args = tc.get("arguments", {}) or {}
                 if name == "update_mood":
-                    label = str(args.get("mood", "") or "").strip()
                     if "valence" in args and args["valence"] is not None:
                         try:
                             valence = max(-1.0, min(1.0, float(args["valence"])))
@@ -97,8 +122,17 @@ class Life:
                             arousal = max(0.0, min(1.0, float(args["arousal"])))
                         except (TypeError, ValueError):
                             pass
-                    mood = label or last_mood
-                    mood_update = {"mood": mood, "valence": valence, "arousal": arousal, "mood_at": now}
+                    if "dominance" in args and args["dominance"] is not None:
+                        try:
+                            dominance = max(-1.0, min(1.0, float(args["dominance"])))
+                        except (TypeError, ValueError):
+                            pass
+                    if "attribution" in args and args["attribution"] is not None:
+                        try:
+                            attribution = max(-1.0, min(1.0, float(args["attribution"])))
+                        except (TypeError, ValueError):
+                            pass
+                    mood_update = {"valence": valence, "arousal": arousal, "dominance": dominance, "attribution": attribution, "mood_at": now}
                 elif name == "schedule_next_wake":
                     try:
                         nxt = int(args.get("minutes"))
@@ -113,6 +147,8 @@ class Life:
 
         next_wake_at = now + nxt * 60
         self._save(next_wake_at, now, mood_update)
+        if mood_update:
+            mood = self.store.get_life_state().get("mood", mood)
         return {"mood": mood, "drive": drive, "next_wake": nxt}
 
     def decide_action(self, drive, tools, extra_context=None):
@@ -120,22 +156,29 @@ class Life:
         extra_context：读结果回喂——把刚浏览到的内容拼进 prompt，让 LLM 决定后续。"""
         try:
             settings = self.store.get_settings()
-            prompt = self._action_prompt(settings, drive, extra_context)
-            result = self.brain.chat_with_tools([{"role": "user", "content": prompt}], tools)
-            return result.get("tool_calls", []) or []
+            names = {t['function']['name'] for t in tools}
+            private = 'send_message' in names and (drive == '陪伴' or bool(self._pending_context(settings)))
+            if private:
+                tools = [t for t in tools if t['function']['name'] in ('send_message','like_master','poke_master')]
+            target_scope = 'owner' if private else 'global'
+            prompt = self._action_prompt(settings, drive, extra_context, target_scope)
+            result = self.brain.chat_with_tools([{"role": "system", "content": render_identity(settings)}, {"role": "user", "content": prompt}], tools)
+            allowed = {t['function']['name'] for t in tools}
+            return [tc for tc in (result.get("tool_calls", []) or []) if tc.get('name') in allowed]
         except Exception as e:
             self.store.add_log("error", "life", f"行动决策异常: {e}")
             return []
 
-    def _action_prompt(self, settings, drive, extra_context=None):
+    def _action_prompt(self, settings, drive, extra_context=None, target_scope='global'):
         name = (settings.get("name") or "").strip()
         intro = f"你是「{name}」。" if name else "你是一个活着的智能体。"
         sp_text = render_self_profile(settings.get("self_profile"))
-        lines = [intro]
-        if sp_text:
-            lines.append(sp_text)
+        lines = [render_identity(settings)]
         lines.append(f"你现在偏向「{drive}」这个天性面。")
-        lines.append(self._pending_context(settings))
+        rows = self.store.action_context(target_scope, self._context_ids)
+        lines.append(data_message({'target_scope': target_scope, 'trigger_evidence': evidence_data(rows)})['content'])
+        if target_scope == 'owner':
+            lines.append(self._pending_context(settings))
         if extra_context:
             lines.append(str(extra_context))
         lines.append("用工具做一件具体的事吧（也可以什么都不做，那就不调工具）。")
@@ -164,22 +207,27 @@ class Life:
         recent = self.store.get_logs("status", limit=8)
         recent_text = "\n".join(f"- [{r['ts']}] {r['message']}" for r in recent) or "（还没有发生过什么）"
 
-        mems = [m for m in self.store.get_memories(limit=20) if m["kind"] != "intention"][:8]
-        mem_text = "\n".join(f"- {m['subject']}: {m['content']}" for m in mems) or "（还没有记忆）"
+        mems = self.store.get_memories(limit=8, kinds=('fact','belief','experience','episode'), current_only=True)
+        self._context_ids = [m['id'] for m in mems]
+        mem_text = "\n".join(format_memory_line(m) for m in mems) or "（还没有记忆）"
 
         platforms = "、".join(settings.get("enabled_platforms", []) or []) or "暂无"
 
         intro = f"你是「{name}」。" if name else "你是一个活着的智能体。"
         mood_line = f"你上次的心情是「{last_mood}」（心情会随时间自然平复）。可以延续它，也可以变了。" if last_mood else "这是你第一次醒来。"
+        mood_num = (f"你此刻的心情数值：valence={st.get('valence', 0):.2f}(愉悦度)、"
+                    f"arousal={st.get('arousal', 0):.2f}(唤醒度)、dominance={st.get('dominance', 0):.2f}(掌控感)、attribution={st.get('attribution', 0):.2f}(归因)。"
+                    f"心情会影响你此刻偏向的天性面：valence 低→更想「陪伴/被安慰」；valence 高→更想「表达/分享」；"
+                    f"arousal 高→更想「玩耍/好奇」；dominance 低→更想「陪伴/寻求支持」；也可以违背心情。")
         weather_text = weather.get_weather(settings.get("city", ""))
         weather_part = f"现在的天气：{weather_text}。" if weather_text else ""
         sp_text = render_self_profile(settings.get("self_profile"))
 
         return "\n".join([
-            intro,
-            sp_text,
+            render_identity(settings),
             f"现在是 {_now_str()}。{weather_part}",
             f"距离你上次醒来已经 {since_wake}。{mood_line}",
+            mood_num,
             "",
             "你的性子（背景，不是指令）：关系层=陪伴/被需要/亲密；自我层=表达/情绪/自我；探索层=好奇/创造/玩耍；存在层=生存/成长/意义。",
             "",
@@ -202,12 +250,13 @@ class Life:
         """第一段（本能）工具：心情 + 本能面 + 下次醒来。"""
         return [
             {"type": "function", "function": {
-                "name": "update_mood", "description": "更新心情：mood 是一句简短描述（如「平静」「有点低落」），valence 是愉悦度 -1(难过)到 1(开心)，arousal 是唤醒度 0(平静)到 1(兴奋)。",
+                "name": "update_mood", "description": "更新心情：valence 是愉悦度 -1(难过)到 1(开心)，arousal 是唤醒度 0(平静)到 1(兴奋)，dominance 是掌控感 -1(无力/顺从)到 1(掌控/有力)，attribution 是归因 -1(外界/他人导致)到 1(自己导致)。",
                 "parameters": {"type": "object", "properties": {
-                    "mood": {"type": "string", "description": "心情的简短描述"},
                     "valence": {"type": "number", "description": "愉悦度 -1 到 1"},
                     "arousal": {"type": "number", "description": "唤醒度 0 到 1"},
-                }, "required": ["mood", "valence", "arousal"]},
+                    "dominance": {"type": "number", "description": "掌控感 -1(无力/顺从)到 1(掌控/有力)"},
+                    "attribution": {"type": "number", "description": "归因 -1(外界/他人导致)到 1(自己导致)"},
+                }, "required": ["valence", "arousal", "dominance", "attribution"]},
             }},
             {"type": "function", "function": {
                 "name": "schedule_next_wake", "description": "定你下次醒来想一下的时间。",

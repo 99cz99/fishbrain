@@ -13,6 +13,7 @@ import threading
 import time
 
 from memory_system import MemorySystem
+from memory_policy import TRUST_RULES, person_code, redact_secrets, CONTROL_KEYS
 
 # 软设定默认值（代码只给中性占位，用户在 app 里改）
 DEFAULT_SETTINGS = {
@@ -24,6 +25,8 @@ DEFAULT_SETTINGS = {
     "temperament": {                  # 气质：心情衰减的基线 + 平复快慢（稳定层，心情在其上波动）
         "valence": 0.0,               # 情绪基调 -1(偏阴郁) ~ 1(偏阳光)
         "arousal": 0.0,               # 唤醒基调 0(沉静) ~ 1(活跃)
+        "dominance": 0.0,             # 掌控感基调 -1(无力/顺从) ~ 1(掌控/有力)
+        "attribution": 0.0,           # 归因基调 -1(偏外因) ~ 1(偏内因)
         "tau_hours": 4.0,             # 平复快慢：越小平复越快
     },
     "self_profile": {                 # 自我画像：结构化非情绪身份（价值观/风格/喜好/边界）
@@ -31,6 +34,18 @@ DEFAULT_SETTINGS = {
         "style": [],                  # 说话风格/口头禅，≤3 条
         "likes": [],                  # 喜好/兴趣，≤4 条
         "boundaries": [],             # 边界/原则，≤3 条
+    },
+    "mood_params": {                  # 情绪算法超参（app「算法超参」页可改；缺键回退常量默认）
+        "fast_ratio": 0.6,            # 双时间常数：快衰减占比
+        "positive_tau_scale": 1.5,    # 正情绪 τ 缩放（越大越持久）
+        "negative_tau_scale": 0.6,    # 负情绪 τ 缩放（越大越持久）
+        "emotion_nudge_k": 0.05,      # 情感传染系数
+        "emotion_nudge_cap": 0.1,     # 情感传染封顶
+        "appraisal_nudge_k": 0.4,     # valence nudge 系数
+        "appraisal_arousal_k": 0.3,   # arousal nudge 系数
+        "appraisal_dominance_k": 0.4, # dominance nudge 系数
+        "appraisal_attribution_k": 0.4,  # attribution nudge 系数
+        "appraisal_min_intensity": 0.2,  # 低于此强度不 nudge
     },
     "persona": "",                    # 设定（性格+口头禅都写这里，自由文本）
     "chat_scope": "all",              # all = 对谁都放开
@@ -55,27 +70,118 @@ MAX_MEMORIES = 300              # 长期记忆总量上限（超出淘汰价值�
 IMPORTANCE_REFLECT_THRESHOLD = 30  # 累计重要性越过它触发反思合并
 MAX_STICKERS = 200              # 表情包库上限（超了删最旧的 + 删文件）
 
-# 心情衰减：valence/arousal 读时按指数回基线，防心情卡死/螺旋
+# 心情衰减：valence/arousal/dominance/attribution 读时按指数回基线，防心情卡死/螺旋
 MOOD_BASELINE_VALENCE = 0.0
 MOOD_BASELINE_AROUSAL = 0.0
+MOOD_BASELINE_DOMINANCE = 0.0
+MOOD_BASELINE_ATTRIBUTION = 0.0
 MOOD_TAU_HOURS = 4.0
 
+# 情绪衰减：双时间常数（快平复 + 慢残留）+ 不对称（正情绪慢、负情绪快）
+MOOD_FAST_RATIO = 0.6          # 双时间常数：快衰减占比
+MOOD_POSITIVE_TAU_SCALE = 1.5  # 正情绪衰减更慢（愉悦持续）
+MOOD_NEGATIVE_TAU_SCALE = 0.6  # 负情绪衰减更快（快速恢复）
 
-def decay_mood(valence, arousal, mood_at, now,
+# 情感传染：心跳回忆情绪明显的记忆时，对当前 valence 的轻微 nudge
+MEMORY_EMOTION_NUDGE_K = 0.05   # 每条 |emotion|≥0.3 记忆的 nudge 系数
+MEMORY_EMOTION_NUDGE_CAP = 0.1  # 单次心跳情感传染的 valence 总幅度上限
+
+
+def decay_mood(valence, arousal, dominance, attribution, mood_at, now,
                baseline_valence=MOOD_BASELINE_VALENCE,
                baseline_arousal=MOOD_BASELINE_AROUSAL,
-               tau_hours=MOOD_TAU_HOURS):
-    """心情数值按指数衰减回基线（只读时算、不落盘）。返回 (valence, arousal)。"""
+               baseline_dominance=MOOD_BASELINE_DOMINANCE,
+               baseline_attribution=MOOD_BASELINE_ATTRIBUTION,
+               tau_hours=MOOD_TAU_HOURS,
+               fast_ratio=MOOD_FAST_RATIO,
+               positive_tau_scale=MOOD_POSITIVE_TAU_SCALE,
+               negative_tau_scale=MOOD_NEGATIVE_TAU_SCALE):
+    """心情数值按指数衰减回基线（只读时算、不落盘）。返回 (valence, arousal, dominance, attribution)。
+    双时间常数（快平复 + 慢残留）；valence 走不对称 τ（正情绪慢、负情绪快）。"""
     if not mood_at:
-        return valence, arousal
+        return valence, arousal, dominance, attribution
     dt = max(0.0, now - float(mood_at))
     if dt <= 0:
-        return valence, arousal
-    tau = max(0.5, min(72.0, float(tau_hours))) * 3600.0
-    k = math.exp(-dt / tau)
-    v = baseline_valence + (valence - baseline_valence) * k
+        return valence, arousal, dominance, attribution
+    tau_fast = max(0.5, min(72.0, float(tau_hours))) * 3600.0
+    tau_slow = tau_fast * 3.0
+    k = fast_ratio * math.exp(-dt / tau_fast) + (1.0 - fast_ratio) * math.exp(-dt / tau_slow)
+    v_scale = positive_tau_scale if valence >= baseline_valence else negative_tau_scale
+    v_tau_fast = tau_fast * v_scale
+    v_tau_slow = v_tau_fast * 3.0
+    kv = fast_ratio * math.exp(-dt / v_tau_fast) + (1.0 - fast_ratio) * math.exp(-dt / v_tau_slow)
+    v = baseline_valence + (valence - baseline_valence) * kv
     a = baseline_arousal + (arousal - baseline_arousal) * k
-    return v, a
+    d = baseline_dominance + (dominance - baseline_dominance) * k
+    t = baseline_attribution + (attribution - baseline_attribution) * k
+    return v, a, d, t
+
+
+def mood_label(valence, arousal, dominance, attribution,
+               baseline_valence=MOOD_BASELINE_VALENCE,
+               baseline_arousal=MOOD_BASELINE_AROUSAL,
+               baseline_dominance=MOOD_BASELINE_DOMINANCE,
+               baseline_attribution=MOOD_BASELINE_ATTRIBUTION):
+    """由四维数值唯一推导心情标签（相对气质基线）。valence 中性一律「如常」；
+    负情绪高唤醒区用 dominance+attribution 区分「烦躁(愤怒) / 内疚 / 害怕(恐惧)」。"""
+    dv = valence - baseline_valence
+    da = arousal - baseline_arousal
+    dd = dominance - baseline_dominance
+    dat = attribution - baseline_attribution
+    if abs(dv) < 0.15:
+        return "如常"
+    if dv > 0.4:
+        return "开心"
+    if dv > 0.15:
+        return "不错"
+    # dv < -0.15（负情绪）
+    if da > 0.3:
+        if dd > 0.15:
+            return "烦躁"
+        return "内疚" if dat > 0.15 else "害怕"
+    if dv < -0.4:
+        return "低落"
+    return "有点闷"
+
+
+def emotion_label(emotion):
+    """记忆 emotion(-1~1) → 简短情绪词（召回标注用）；接近 0 返回空串。"""
+    try:
+        e = float(emotion or 0)
+    except (TypeError, ValueError):
+        return ""
+    if abs(e) < 0.15:
+        return ""
+    if e > 0.4:
+        return "开心"
+    if e > 0.15:
+        return "不错"
+    if e < -0.4:
+        return "低落"
+    return "有点闷"
+
+
+def format_memory_line(m, with_kind=False):
+    """把一条记忆格式化成一行，情绪明显时带标注。"""
+    kind = f"[{m.get('kind', '')}] " if with_kind else ""
+    line = (f"- {kind}[{person_code(m.get('entity_id'))} 范围={m.get('scope', '未知')} "
+            f"时间={m.get('created_at', '未知')} #{m.get('id', '?')}] "
+            f"{m.get('subject', '')}: {redact_secrets(m.get('content', ''))}")
+    emo = emotion_label(m.get("emotion", 0))
+    if emo:
+        line += f"（当时{emo}）"
+    return line
+
+
+def mood_param(settings, key, default):
+    """读 settings['mood_params'][key]，缺失/非法回退 default。"""
+    mp = settings.get("mood_params") or {}
+    if not isinstance(mp, dict):
+        return default
+    try:
+        return float(mp.get(key, default))
+    except (TypeError, ValueError):
+        return default
 
 
 def render_self_profile(sp):
@@ -192,11 +298,40 @@ class Store(MemorySystem):
                     self._conn.backup(backup)
                 finally:
                     backup.close()
+        if columns and str(db_path) != ':memory:' and not self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE name='memory_terms'").fetchone():
+            backup_path = str(db_path) + '.pre-memory-policy-v3.db'
+            if not os.path.exists(backup_path):
+                backup = sqlite3.connect(backup_path)
+                try:
+                    self._conn.backup(backup)
+                finally:
+                    backup.close()
         self._conn.executescript(SCHEMA)
         with self._conn:
             self._conn.execute("BEGIN")
             self._migrate()
         self._lock = threading.RLock()  # 可重入：add_memory/update_sticker 持锁时也会调 get_* 读方法
+        self._apply_privacy_migration()
+
+    def _apply_privacy_migration(self):
+        from memory_policy import contains_secret
+        with self._lock, self._conn:
+            if self.get_setting_raw('memory_policy_version') == 3:
+                return
+            for mid, kind, content in self._conn.execute("SELECT id,kind,content FROM memories WHERE status!='deleted'").fetchall():
+                cleaned = redact_secrets(content)
+                if cleaned != content:
+                    self._conn.execute('UPDATE memories SET content=? WHERE id=?', (cleaned, mid))
+                    self._index_memory(mid, cleaned)
+                    if kind in ('fact','belief','intention'):
+                        self._invalidate_dependents([mid], 'quarantined')
+            for table, column in (('short_term','content'), ('logs','message')):
+                for rid, text in self._conn.execute(f'SELECT id,{column} FROM {table}').fetchall():
+                    cleaned = redact_secrets(text)
+                    if cleaned != text:
+                        self._conn.execute(f'UPDATE {table} SET {column}=? WHERE id=?', (cleaned, rid))
+            self._conn.execute("INSERT OR REPLACE INTO settings VALUES('memory_policy_version','3')")
 
     def _migrate(self):
         # 老库补 platform 列
@@ -238,10 +373,36 @@ class Store(MemorySystem):
                     d[key] = merged
                 else:
                     d[key] = value
+            d['manual_self_profile'] = d.get('self_profile') or {}
+            d['self_profile'] = self._effective_profile(d['manual_self_profile'])
+            d['self_profile_revision'] = self.profile_revision({'profile': d['self_profile'], 'persona': d.get('persona', ''),
+                                                               'manual': d['manual_self_profile'], 'vetoes': self.personality_vetoes()})
             return d
+
+    def apply_manual_settings(self, updates):
+        """Persist explicit user control and its lock atomically with respect to evolution."""
+        with self._lock:
+            locked = set(self.get_setting_raw('user_locked_settings') or [])
+            locked.update(CONTROL_KEYS.intersection(updates))
+            if locked:
+                self.set_setting('user_locked_settings', sorted(locked))
+            self.set_settings(updates)
+
+    def apply_evolved_settings(self, updates, snapshot):
+        with self._lock:
+            current = self.get_settings()
+            locked = set(current.get('user_locked_settings') or [])
+            # Existing restrictions are protected even before the first editor save.
+            for key, value in updates.items():
+                if (key in locked or current.get(key) != snapshot.get(key)
+                        or key in ('approve_money', 'approve_publish', 'midnight_ok', 'enabled_platforms')):
+                    continue
+                self.set_setting(key, value)
 
     def set_setting(self, key, value):
         with self._lock:
+            if key == 'self_profile':
+                self._conn.execute("DELETE FROM personality_traits")
             self._conn.execute(
                 "INSERT INTO settings(key, value) VALUES(?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -276,22 +437,37 @@ class Store(MemorySystem):
         try:
             base_v = float(temp.get("valence", MOOD_BASELINE_VALENCE))
             base_a = float(temp.get("arousal", MOOD_BASELINE_AROUSAL))
+            base_d = float(temp.get("dominance", MOOD_BASELINE_DOMINANCE))
+            base_t = float(temp.get("attribution", MOOD_BASELINE_ATTRIBUTION))
             tau = float(temp.get("tau_hours", MOOD_TAU_HOURS))
         except (TypeError, ValueError):
-            base_v, base_a, tau = MOOD_BASELINE_VALENCE, MOOD_BASELINE_AROUSAL, MOOD_TAU_HOURS
+            base_v, base_a, base_d, base_t, tau = MOOD_BASELINE_VALENCE, MOOD_BASELINE_AROUSAL, MOOD_BASELINE_DOMINANCE, MOOD_BASELINE_ATTRIBUTION, MOOD_TAU_HOURS
         try:
             valence = float(d.get("valence", base_v))
             arousal = float(d.get("arousal", base_a))
+            dominance = float(d.get("dominance", base_d))
+            attribution = float(d.get("attribution", base_t))
         except (TypeError, ValueError):
-            valence, arousal = base_v, base_a
-        valence, arousal = decay_mood(valence, arousal, d.get("mood_at", 0.0), time.time(), base_v, base_a, tau)
-        mood = d.get("mood", "")
-        if abs(valence - base_v) < 0.15 and abs(arousal - base_a) < 0.3:
-            mood = "如常"
+            valence, arousal, dominance, attribution = base_v, base_a, base_d, base_t
+        # 外部信号：天气 + 昼夜节律，偏移有效基线（decay 与 mood_label 都用）
+        import weather
+        city = settings.get("city", "")
+        weather_offset = weather.get_weather_mood(city) if city else 0.0
+        hour = time.localtime().tm_hour
+        diurnal = 0.05 * math.sin((hour - 3) / 24 * 2 * math.pi)
+        eff_v = base_v + weather_offset
+        eff_a = base_a + diurnal
+        fast_ratio = mood_param(settings, "fast_ratio", MOOD_FAST_RATIO)
+        pos_scale = mood_param(settings, "positive_tau_scale", MOOD_POSITIVE_TAU_SCALE)
+        neg_scale = mood_param(settings, "negative_tau_scale", MOOD_NEGATIVE_TAU_SCALE)
+        valence, arousal, dominance, attribution = decay_mood(valence, arousal, dominance, attribution, d.get("mood_at", 0.0), time.time(), eff_v, eff_a, base_d, base_t, tau, fast_ratio, pos_scale, neg_scale)
+        mood = mood_label(valence, arousal, dominance, attribution, eff_v, eff_a, base_d, base_t)
         return {
             "mood": mood,
             "valence": round(valence, 3),
             "arousal": round(arousal, 3),
+            "dominance": round(dominance, 3),
+            "attribution": round(attribution, 3),
             "next_wake_at": d.get("next_wake_at", 0.0),
             "last_wake_at": d.get("last_wake_at", 0.0),
         }
@@ -300,6 +476,7 @@ class Store(MemorySystem):
         self.set_setting("life_state", d)
 
     def add_log(self, level, category, message):
+        message = redact_secrets(message)
         with self._lock:
             self._conn.execute(
                 "INSERT INTO logs(ts, level, category, message) VALUES(?, ?, ?, ?)",
@@ -326,7 +503,7 @@ class Store(MemorySystem):
         with self._lock:
             self._conn.execute(
                 "INSERT INTO short_term(session, role, content, platform, ts) VALUES(?, ?, ?, ?, ?)",
-                (session, role, content, platform, _now()),
+                (session, role, redact_secrets(content), platform, _now()),
             )
             self._conn.execute(
                 "DELETE FROM short_term WHERE session=? AND id NOT IN "

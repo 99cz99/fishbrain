@@ -5,14 +5,21 @@ import 'package:dfy_app/pages/settings.dart';
 
 class SettingsApi extends ApiClient {
   Map<String, dynamic>? saved;
+  String revision = 'revision-1';
+  String trait = 'existing';
+  String growthState = 'unchanged';
+  int reads = 0;
   bool fail = false;
   @override
   Future<Map<String, dynamic>> settings() async {
+    reads++;
     if (fail) throw Exception('offline');
     return {
       'name': 'Fish',
+      'self_profile_revision': revision,
+      'growth_status': {'state': growthState},
       'self_profile': {
-        'values': ['existing'],
+        'values': [trait],
       },
     };
   }
@@ -28,9 +35,87 @@ class SettingsApi extends ApiClient {
     saved = value;
     return value;
   }
+
+  @override
+  Future<Map<String, dynamic>> growthEvolve() async {
+    growthState = 'running';
+    return {'ok': true};
+  }
 }
 
 void main() {
+  testWidgets('opening profile reads latest value and saves its revision', (
+    tester,
+  ) async {
+    final api = SettingsApi();
+    addTearDown(api.close);
+    await tester.pumpWidget(MaterialApp(home: SettingsPage(api: api)));
+    await tester.pumpAndSettle();
+    api.trait = 'new trait';
+    api.revision = 'revision-2';
+    await tester.tap(find.text('自我画像'));
+    await tester.pumpAndSettle();
+    expect(find.text('new trait'), findsOneWidget);
+    await tester.scrollUntilVisible(
+      find.text('保存'),
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('保存'));
+    await tester.pumpAndSettle();
+    expect(api.saved!['self_profile_revision'], 'revision-2');
+  });
+
+  testWidgets('self reflection polls completion and refreshes profile', (
+    tester,
+  ) async {
+    final api = SettingsApi();
+    addTearDown(api.close);
+    await tester.pumpWidget(MaterialApp(home: SettingsPage(api: api)));
+    await tester.pumpAndSettle();
+    await tester.scrollUntilVisible(find.text('让它自省一次'), 250);
+    await tester.tap(find.text('让它自省一次'));
+    await tester.pump();
+    expect(find.text('正在自省并检查人格成长…'), findsOneWidget);
+    api.growthState = 'updated';
+    api.trait = 'grown trait';
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pumpAndSettle();
+    expect(find.text('画像已更新'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('自我画像'), -250);
+    await tester.tap(find.text('自我画像'));
+    await tester.pumpAndSettle();
+    expect(find.text('grown trait'), findsOneWidget);
+  });
+
+  testWidgets(
+    'dirty draft retains old revision so server can reject stale save',
+    (tester) async {
+      final api = SettingsApi();
+      addTearDown(api.close);
+      await tester.pumpWidget(MaterialApp(home: SettingsPage(api: api)));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('自我画像'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField).first, 'my draft');
+      await tester.pageBack();
+      await tester.pumpAndSettle();
+      api.trait = 'background change';
+      api.revision = 'revision-2';
+      await tester.tap(find.text('自我画像'));
+      await tester.pumpAndSettle();
+      expect(find.text('my draft'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('保存'),
+        250,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.text('保存'));
+      await tester.pumpAndSettle();
+      expect(api.saved!['self_profile_revision'], 'revision-1');
+    },
+  );
+
   testWidgets('password fields are single line', (tester) async {
     final api = SettingsApi();
     addTearDown(api.close);
@@ -60,7 +145,11 @@ void main() {
       find.widgetWithText(SwitchListTile, '半夜也能主动找我'),
     );
     expect(tile.value, isFalse);
-    await tester.ensureVisible(find.text('保存'));
+    await tester.scrollUntilVisible(
+      find.text('保存'),
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
     await tester.tap(find.text('保存'));
     await tester.pumpAndSettle();
     expect(api.saved!['midnight_ok'], isFalse);

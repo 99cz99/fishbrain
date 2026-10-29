@@ -21,6 +21,8 @@ from memory import Store
 from brain import Brain
 from autonomy import Autonomy
 from qq_bot import STICKER_DIR
+from memory_policy import action_outcome
+from delivery import SendUnconfirmedError
 
 # NapCat 二维码文件路径（proot-Debian 容器内，映射到 Termux 文件系统）
 DEFAULT_QRCODE_PATH = "/data/data/com.termux/files/usr/var/lib/proot-distro/containers/debian/rootfs/opt/QQ/resources/app/app_launcher/napcat/cache/qrcode.png"
@@ -236,21 +238,35 @@ class Fish:
                 raise ValueError("平台未确认申请处理结果，请先核实 QQ 状态再操作")
         elif kind == "heybox_post" and self.heybox:
             self.log("info", "approval", f"执行发帖: {args.get('title', '')}")
-            threading.Thread(target=self.heybox.post,
-                             args=(args.get("title", ""), args.get("content", "")),
+            threading.Thread(target=self._execute_recorded_action,
+                             args=(aid, kind, self.heybox.post, (args.get("title", ""), args.get("content", "")), 'heybox'),
                              daemon=True).start()
         elif kind == "heybox_comment" and self.heybox:
             self.log("info", "approval", f"执行评论: {args.get('content', '')}")
-            threading.Thread(target=self.heybox.comment,
-                             args=(args.get("link_id", 0), args.get("content", "")),
+            threading.Thread(target=self._execute_recorded_action,
+                             args=(aid, kind, self.heybox.comment, (args.get("link_id", 0), args.get("content", "")), 'heybox'),
                              daemon=True).start()
         elif kind == "publish":
             text = (ap.get("summary") or "").strip()
             if text and self.qq_bot:
                 self.log("info", "approval", f"执行发空间动态: {text}")
-                threading.Thread(target=self.qq_bot.send_qzone_mood, args=(text,), daemon=True).start()
+                threading.Thread(target=self._execute_recorded_action,
+                                 args=(aid, kind, self.qq_bot.send_qzone_mood, (text,), 'qq'), daemon=True).start()
             else:
                 self.log("error", "approval", "发空间动态失败：内容为空或 QQ 未连接")
+
+    def _execute_recorded_action(self, aid, kind, function, args, platform):
+        outcome = 'failed_or_partial'
+        try:
+            outcome = action_outcome(function(*args))
+        except SendUnconfirmedError:
+            outcome = 'unconfirmed'
+        except Exception as exc:
+            self.log('error', 'approval', f'审批动作执行失败: {type(exc).__name__}')
+        finally:
+            # The approval authorizes public content; diagnostics and returned credentials are not evidence.
+            self.store.record_action_result(kind, json.dumps(args, ensure_ascii=False), outcome, platform,
+                                            scope='global', event_key=f'approval-result:{aid}')
 
     def _build_heybox(self):
         """按当前 token 重建小黑盒适配器（token 空则禁用）。
@@ -928,6 +944,7 @@ class Handler(BaseHTTPRequestHandler):
                 "current_task": f.current_task,
                 "uptime": int(time.time() - f.started),
                 "platforms": s.get("enabled_platforms"),
+                "memory_queue": f.store.memory_queue_status(),
             })
         if path == "/logs":
             return self._send(200, {"logs": f.store.get_logs(
@@ -1067,8 +1084,19 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, TypeError) as exc:
                 return self._send(400, {"error": str(exc)})
         if path == "/settings":
-            f.store.set_settings(body)
-            return self._send(200, f.store.get_settings())
+            with f.store._lock:
+                if 'self_profile' in body:
+                    if body.get('self_profile_revision') != f.store.get_settings()['self_profile_revision']:
+                        return self._send(409, {'error': '画像已变化，请刷新后再保存'})
+                    profile = body['self_profile']
+                    if (not isinstance(profile, dict) or set(profile)-{'values','style','likes','boundaries'}
+                            or any(not isinstance(v, list) or any(not isinstance(t, str) for t in v) for v in profile.values())):
+                        return self._send(400, {'error': '画像格式无效'})
+                updates = {k:v for k,v in body.items() if k not in ('self_profile_revision','growth_status','manual_self_profile','user_locked_settings')}
+                if 'self_profile' in updates:
+                    f.store.save_manual_profile(updates.pop('self_profile'))
+                f.store.apply_manual_settings(updates)
+                return self._send(200, f.store.get_settings())
         if path == "/llm":
             existing = f.store.get_settings().get("llm", {}) or {}
             merged = dict(existing)

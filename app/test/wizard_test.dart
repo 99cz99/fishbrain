@@ -56,7 +56,11 @@ void main() {
       expect(stopped, greaterThan(checked));
       expect(activated, greaterThan(stopped));
       expect(commands.any((c) => c.contains('.update/server.py')), isTrue);
-      expect(commands.any((c) => c.contains('.update/memory_system.py')), isTrue);
+      expect(
+        commands.any((c) => c.contains('.update/memory_system.py')),
+        isTrue,
+      );
+      expect(commands.any((c) => c.contains('.update/personality.py')), isTrue);
       expect(
         commands.where((c) => c.contains('config.toml')).single,
         contains('if [ ! -e'),

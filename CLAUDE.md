@@ -40,7 +40,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 短期上下文 `memory.py:short_term`：**统一存**——`_on_message` 在回复决策**之前**就把所有消息（含非 @ 群消息）写进去、带来源标签（`[群 X] 某人:` / `[私聊] 某人:`）；`get_short_term(scope)` 按同一套隐私层级取「最近 N 条」（owner 全渠道、群只看本群、私聊只看本人）。**坑（已踩已修，别回退）**：当前消息既进了 short_term（带前缀）又作为 final user turn 单独 append，会让 LLM 看到同一条消息两遍、误以为「对方发了两遍」——拼 `chat_messages` 时要用写 short_term 时的**原文 `written_user`**（在图片/链接处理改 `text` 之前就存好）把 `history[-1]` 里这条剔掉，见 `qq_bot.py:_on_message`。
 - 回复策略 `qq_bot.py:_should_reply_quick`：私聊/@我必回、@别人不回；**其它群消息交给 `brain.should_reply()`（LLM 语义判断「该不该回」，不是关键词）**。旧的「主动插话漏斗」（`Store.relevance` 2-gram + 概率 + follow-up 重叠）已删。
 - `build_system_prompt` 注入 `life_state.mood`（让心情**隐式**影响语气、别直说）+ 一句「有自己的想法不是客服」的观点引导。心情是**四维 PAD+归因**：`life_state` 带 `valence`(-1..1)/`arousal`(0..1)/`dominance`(-1..1)/`attribution`(-1..1)，`mood` 标签由 `memory.mood_label` 从四维**唯一推导（不落盘）**；读时按**双时间常数 + 不对称**衰减回**有效基线**（`temperament` 气质基线 + 天气/昼夜偏移，`memory.decay_mood`/`get_life_state`；正情绪衰减慢、负情绪快速恢复），事件 nudge（`autonomy._nudge_mood`）走**方向性饱和**（只挡推向更极端、不挡恢复）；`mood_label` 负情绪高唤醒区用 dominance+attribution 三分「烦躁(愤怒)/内疚/害怕」。心情还经「回忆情绪明显的记忆」**情感传染**（`life.heartbeat`）、注入四维数值**影响 drive 选择**（`life._prompt`）。所有算法超参（快慢比例/正负 τ 缩放/传染强度/各 nudge 系数/最低强度阈值）存 settings `mood_params`，app「设定→算法超参」页可改，`memory.mood_param()` 读、缺键回退常量默认。
-- 自身人格画像 `settings.self_profile`（`values`/`style`/`likes`/`boundaries` 四维）经 `render_self_profile()` 注入 system/life prompt；`autonomy.distill_self_profile()` 从 **`scope="global"`、`entity_id="self"` 的 belief** 加性提炼（去重+封顶+不与人设冲突；prompt 要求「反复出现/有明确证据才结晶」防漂移；`allow_self_evolve` 门控 + 1h 节流，手动 `/growth/evolve` 强制跑）。**注意**：全局 self_profile 只从 global 范围的 self belief 提炼，私聊（owner）经历不写入全局人格（见 `docs/memory-system.md`「隐私与人格」）；`evolve()` 只改软设定（chat_scope/midnight_ok 等），**不产生 self 记忆、不重写 persona**（人格演化交给 distill）。
+- 自身人格画像统一：`personality.py` 的 `personality_traits` 保存自动特质与私人依据；`settings.self_profile` 保存手动条目，`get_settings()` 合并后经 `render_self_profile()` 注入所有聊天和 life prompt。QQ 实际发送回复后记录同范围 self/experience，引用原始事件并增加反思积分；私有自身经历可以经提炼及单独的隐私/证据审查塑造公开特质，但私人故事、关系事实、人物及依据 ID 不进入公开提示词。新特质至少2个独立根事件，修改旧特质至少3个；删除依据仅撤销支持不足的自动条目。`growth_status` 提供进度、跳过原因及更新时间；画像保存须带 `self_profile_revision`，冲突返回409。自动一小时节流及 allow_self_evolve 门控，手动强制检查。`evolve()` 只改软设定；旧隔离洞察不自动恢复。详见 `docs/memory-system.md`。
 - 回复走纯文本、可「分多条」：`_on_message` 只用 `chat`（无审批通道时）或 `chat_with_tools`（**只带 `publish` 发空间工具**，`send_text` 工具已删——说话=纯文本、人设活在语言层，工具只做真动作）；多段靠正文自然空行 → 按空行拆成多条；回复加 `temperature=1.1`/`frequency_penalty=0.4`/`presence_penalty=0.2`（只聊天路径，JSON/判断路径不加）；`send_text` 方法/主动消息超长按 `MAX_MSG_LEN=4000` 拆、片间 `MSG_SEND_DELAY=0.6s`，群聊只在第一条 `@`。
 
 **QQ 数据流**：QQ 消息 → NapCat → OneBot WS(8081) → `qq_bot.py` → `brain.chat`/`chat_with_tools`（只带 `publish` 工具）→ 回复 → NapCat → QQ。
@@ -90,7 +90,7 @@ flutter analyze --no-pub
 flutter test --no-pub
 flutter build apk --release --no-pub
 adb install -r build/app/outputs/flutter-apk/app-release.apk
-adb shell pm grant com.dfy.dfy_app com.termux.permission.RUN_COMMAND   # 重装后必做
+adb shell pm grant com.dfy.dfy_app com.termux.permission.RUN_COMMAND   # 仅检查确认缺少权限时补授，更新安装通常保留权限
 ```
 
 缺少依赖映射时先 `flutter pub get`，不要顺便升级依赖或改镜像来源。网络受限时可给本次 Gradle 命令传代理 JVM 属性，不把个人代理地址或全局设置写进仓库。**直接运行 Gradle 可能沿用 `android/local.properties` 的旧版本号**，最终打包优先使用 Flutter 构建入口，并核对 APK/手机的 versionName、versionCode。
@@ -151,7 +151,7 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux sh -c 'sh /data/data/com.termux/
 - **adb `run-as` 能 exec python、能 cd（这台机实测，别信「Android 16 收紧」）**：`run-as com.termux /data/data/com.termux/files/usr/bin/python --version` 返回 3.14.8，`run-as com.termux sh -c 'cd .../dfy && pwd'` 也成。所以起/重启鱼脑可直接走 adb（见「部署鱼脑」命令），不必只靠 app「启动」或手动 Termux。老的「收紧」印象是把上面的 MSYS 路径转换误判了。
 - **Termux 没权限写 `/data/local/tmp`**（`drwxrwx--x shell:shell`，只有 adb/shell 能写；Termux 是普通 app UID 写不进去）。`setup-qq.sh` 下载 linuxqq/NapCat 必须写到 `$PREFIX/tmp`（`/data/data/com.termux/files/usr/tmp`），否则一下载就 Permission denied、脚本 `exit 1`——这正是「装 QQ 环境卡在安装 linuxqq」的根因。
 - **`Store.get_logs(category, level, limit)` 第二参是 `level` 不是 `limit`**：按位置传会把 limit 当 level 过滤（`WHERE level=40` 永远空）。所以 `get_logs("deploy", 40)` 是错的，要 `get_logs("deploy", limit=40)`。踩过：server.py 的 Deployer 状态、`/chat`、life.py 的「最近发生的事」都曾因此返回空。改 `get_logs` 一律用 `limit=` 关键字。
-- **`app/assets/fish/*.py` 要跟 `fish/` 同步**：那是「部署向导」写进 Termux 的嵌入副本（含 life.py/autonomy.py）。改完 `cp fish/*.py app/assets/fish/`；`app/assets/deploy/` 同理同步 `setup-qq.sh`/`setup-fish.sh`/`onebot11.json`（`setup-fish.sh` 是装 Python 环境的分步脚本，`deploy/` 根目录也要留一份）。
+- **`app/assets/fish/*.py` 要跟 `fish/` 同步**：那是「部署向导」写进 Termux 的嵌入副本。改完执行 `python tools/sync_fish_assets.py`，自动生成所有运行模块副本及 wizard.dart 清单；发布前 `python tools/sync_fish_assets.py --check`，不要只校验部分文件。`app/assets/deploy/` 同理同步 `setup-qq.sh`/`setup-fish.sh`/`onebot11.json`（`setup-fish.sh` 是装 Python 环境的分步脚本，`deploy/` 根目录也要留一份）。
 - **版本号**：改 `app/` 代码或嵌入资源都 bump `app/pubspec.yaml` 的 `version`（x.y.z+n）。2026-10-28 当前为 `1.0.38+52`；APK 路径 `app/build/app/outputs/flutter-apk/app-release.apk`。
 - **不入库**：`fish/config.toml`、`fish/fish.db`、`.api-token`、`app/android/key.properties`、keystore、`__pycache__/`、构建输出（完整清单见 `.gitignore`）。
 

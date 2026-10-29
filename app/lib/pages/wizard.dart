@@ -197,15 +197,17 @@ class _WizardPageState extends State<WizardPage> {
       _upgrading = existing.ok;
       _logLn('暂存鱼脑代码，校验通过后再切换…');
       const files = {
-        'server.py': 'assets/fish/server.py',
-        'brain.py': 'assets/fish/brain.py',
-        'memory.py': 'assets/fish/memory.py',
-        'qq_bot.py': 'assets/fish/qq_bot.py',
-        'delivery.py': 'assets/fish/delivery.py',
-        'memory_system.py': 'assets/fish/memory_system.py',
-        'life.py': 'assets/fish/life.py',
         'autonomy.py': 'assets/fish/autonomy.py',
+        'brain.py': 'assets/fish/brain.py',
+        'delivery.py': 'assets/fish/delivery.py',
         'heybox.py': 'assets/fish/heybox.py',
+        'life.py': 'assets/fish/life.py',
+        'memory.py': 'assets/fish/memory.py',
+        'memory_policy.py': 'assets/fish/memory_policy.py',
+        'memory_system.py': 'assets/fish/memory_system.py',
+        'personality.py': 'assets/fish/personality.py',
+        'qq_bot.py': 'assets/fish/qq_bot.py',
+        'server.py': 'assets/fish/server.py',
         'weather.py': 'assets/fish/weather.py',
       };
       var failed = 0;

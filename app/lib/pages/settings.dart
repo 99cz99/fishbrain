@@ -1,4 +1,6 @@
 // settings.dart — 设定页：改人设/行为参数 + LLM 配置（软设定，存鱼脑 SQLite）
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../api.dart';
@@ -52,6 +54,39 @@ class _SettingsPageState extends State<SettingsPage> {
   bool _heyboxEnabled = false;
   String _heyboxId = '';
   bool _loaded = false;
+  String? _profileRevision;
+  Map<String, dynamic> _growthStatus = {};
+  Timer? _growthTimer;
+  bool _growthBusy = false;
+  bool _profileDirty = false;
+  bool _fillingProfile = false;
+  String? _growthError;
+
+  void _profileEdited() {
+    if (!_fillingProfile) _profileDirty = true;
+  }
+
+  String get _growthText {
+    if (_growthError != null) return _growthError!;
+    return switch (_growthStatus['state']) {
+      'running' => '正在自省并检查人格成长…',
+      'updated' => '画像已更新',
+      'unchanged' => '检查完成，暂没有充分依据更新特质',
+      'insufficient_evidence' => '经历还不够，继续相处后会逐渐形成特质',
+      'error' => '画像提炼失败，可重试并查看成长日志',
+      'interrupted' => '上次自省被服务重启打断，可以重试',
+      _ => '人格会随真实经历逐渐成长',
+    };
+  }
+
+  String get _lastGrowthSuccess {
+    final seconds = _growthStatus['last_success'];
+    if (seconds is! num) return '尚未形成有充分依据的新特质';
+    final time = DateTime.fromMillisecondsSinceEpoch((seconds * 1000).toInt())
+        .toLocal();
+    return '最近更新：${time.toString().split('.').first}';
+  }
+
   String? _loadError;
   void Function()? _rebuildSubpage;
   void _changed(VoidCallback change) {
@@ -63,11 +98,15 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   void initState() {
     super.initState();
+    for (final c in [_spValues, _spStyle, _spLikes, _spBoundaries]) {
+      c.addListener(_profileEdited);
+    }
     _refresh();
   }
 
   @override
   void dispose() {
+    _growthTimer?.cancel();
     _name.dispose();
     _ownerQq.dispose();
     _city.dispose();
@@ -110,20 +149,33 @@ class _SettingsPageState extends State<SettingsPage> {
         final tt = (temp['tau_hours'] as num?)?.toDouble() ?? 4.0;
         _temperamentValence = tv <= -0.15 ? '-0.3' : (tv >= 0.15 ? '0.3' : '0');
         final td = (temp['dominance'] as num?)?.toDouble() ?? 0.0;
-        _temperamentDominance = td <= -0.15 ? '-0.3' : (td >= 0.15 ? '0.3' : '0');
+        _temperamentDominance = td <= -0.15
+            ? '-0.3'
+            : (td >= 0.15 ? '0.3' : '0');
         final ta = (temp['attribution'] as num?)?.toDouble() ?? 0.0;
-        _temperamentAttribution = ta <= -0.15 ? '-0.3' : (ta >= 0.15 ? '0.3' : '0');
+        _temperamentAttribution = ta <= -0.15
+            ? '-0.3'
+            : (ta >= 0.15 ? '0.3' : '0');
         _temperamentTau = tt >= 5.5 ? '6' : (tt <= 2.5 ? '2' : '4');
         _persona.text = s['persona'] ?? '';
+        _growthStatus = Map<String, dynamic>.from(
+          s['growth_status'] as Map? ?? {},
+        );
+        final keepDraft = _profileDirty;
         Map<String, dynamic> sp = const {};
         final spt = s['self_profile'];
         if (spt is Map) {
           sp = Map<String, dynamic>.from(spt);
         }
-        _spValues.text = (sp['values'] as List?)?.join('\n') ?? '';
-        _spStyle.text = (sp['style'] as List?)?.join('\n') ?? '';
-        _spLikes.text = (sp['likes'] as List?)?.join('\n') ?? '';
-        _spBoundaries.text = (sp['boundaries'] as List?)?.join('\n') ?? '';
+        if (!keepDraft) {
+          _fillingProfile = true;
+          _profileRevision = s['self_profile_revision'] as String?;
+          _spValues.text = (sp['values'] as List?)?.join('\n') ?? '';
+          _spStyle.text = (sp['style'] as List?)?.join('\n') ?? '';
+          _spLikes.text = (sp['likes'] as List?)?.join('\n') ?? '';
+          _spBoundaries.text = (sp['boundaries'] as List?)?.join('\n') ?? '';
+          _fillingProfile = false;
+        }
         Map<String, dynamic> mp = const {};
         final mpt = s['mood_params'];
         if (mpt is Map) {
@@ -137,8 +189,10 @@ class _SettingsPageState extends State<SettingsPage> {
         _mpAppraisalNudgeK.text = '${mp['appraisal_nudge_k'] ?? 0.4}';
         _mpAppraisalArousalK.text = '${mp['appraisal_arousal_k'] ?? 0.3}';
         _mpAppraisalDominanceK.text = '${mp['appraisal_dominance_k'] ?? 0.4}';
-        _mpAppraisalAttributionK.text = '${mp['appraisal_attribution_k'] ?? 0.4}';
-        _mpAppraisalMinIntensity.text = '${mp['appraisal_min_intensity'] ?? 0.2}';
+        _mpAppraisalAttributionK.text =
+            '${mp['appraisal_attribution_k'] ?? 0.4}';
+        _mpAppraisalMinIntensity.text =
+            '${mp['appraisal_min_intensity'] ?? 0.2}';
         _chatScope = s['chat_scope'] ?? 'all';
         _midnight = s['midnight_ok'] ?? true;
         _money = s['approve_money'] ?? true;
@@ -160,7 +214,7 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _save({String section = 'identity'}) async {
-    final body = {
+    final body = <String, dynamic>{
       'name': _name.text,
       'owner_qq': _ownerQq.text.trim(),
       'city': _city.text.trim(),
@@ -210,16 +264,21 @@ class _SettingsPageState extends State<SettingsPage> {
       _ => {'name', 'owner_qq', 'city', 'persona'},
     };
     body.removeWhere((key, _) => !fields.contains(key));
+    if (section == 'profile') body['self_profile_revision'] = _profileRevision;
     try {
-      await widget.api.updateSettings(body);
+      final saved = await widget.api.updateSettings(body);
+      if (section == 'profile') {
+        _profileDirty = false;
+        _profileRevision = saved['self_profile_revision'] as String?;
+      }
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(const SnackBar(content: Text('已保存')));
       }
-    } catch (_) {
+    } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('保存失败')));
+            .showSnackBar(SnackBar(content: Text('保存失败：$e')));
       }
     }
   }
@@ -288,18 +347,51 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   Future<void> _evolveNow() async {
+    if (_growthBusy) return;
+    _changed(() {
+      _growthBusy = true;
+      _growthError = null;
+      _growthStatus = {'state': 'running'};
+    });
     try {
       await widget.api.growthEvolve();
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('已让它自省，稍等几秒')));
-      }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('自省失败')));
-      }
+      if (!mounted) return;
+      _pollGrowth(DateTime.now());
+    } catch (e) {
+      _changed(() {
+        _growthBusy = false;
+        _growthError = '自省请求失败：$e';
+      });
     }
+  }
+
+  void _pollGrowth(DateTime started) {
+    _growthTimer?.cancel();
+    _growthTimer = Timer(const Duration(seconds: 2), () async {
+      try {
+        final s = await widget.api.settings();
+        if (!mounted) return;
+        final status = Map<String, dynamic>.from(
+          s['growth_status'] as Map? ?? {},
+        );
+        final running = status['state'] == 'running';
+        _changed(() => _growthStatus = status);
+        if (running && DateTime.now().difference(started).inMinutes < 5) {
+          _pollGrowth(started);
+        } else {
+          _changed(() {
+            _growthBusy = false;
+            if (running) _growthError = '自省仍在后台进行，可稍后刷新查看';
+          });
+          await _refresh();
+        }
+      } catch (e) {
+        _changed(() {
+          _growthBusy = false;
+          _growthError = '读取成长进度失败：$e';
+        });
+      }
+    });
   }
 
   Future<void> _resetPersona() async {
@@ -326,6 +418,7 @@ class _SettingsPageState extends State<SettingsPage> {
     if (ok != true) return;
     try {
       await widget.api.resetPersona();
+      _profileDirty = false;
       await _refresh();
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -378,7 +471,12 @@ class _SettingsPageState extends State<SettingsPage> {
                     _divider(),
                     _navRow('行为', '聊天尺度、气质、权限开关', Icons.tune, _openBehavior),
                     _divider(),
-                    _navRow('算法超参', '情绪衰减、传染、事件影响强度', Icons.speed, _openMoodParams),
+                    _navRow(
+                      '算法超参',
+                      '情绪衰减、传染、事件影响强度',
+                      Icons.speed,
+                      _openMoodParams,
+                    ),
                   ],
                 ),
 
@@ -436,10 +534,13 @@ class _SettingsPageState extends State<SettingsPage> {
                 SectionCard(
                   children: [
                     OutlinedButton.icon(
-                      onPressed: _evolveNow,
+                      onPressed: _growthBusy ? null : _evolveNow,
                       icon: const Icon(Icons.auto_awesome),
                       label: const Text('让它自省一次'),
                     ),
+                    const SizedBox(height: 8),
+                    Text(_growthText),
+                    Text(_lastGrowthSuccess),
                     const SizedBox(height: 10),
                     OutlinedButton.icon(
                       onPressed: () {
@@ -481,10 +582,15 @@ class _SettingsPageState extends State<SettingsPage> {
     context,
     MaterialPageRoute(builder: (_) => _identityPage()),
   );
-  void _openProfile() => Navigator.push(
-    context,
-    MaterialPageRoute(builder: (_) => _profilePage()),
-  );
+  Future<void> _openProfile() async {
+    await _refresh();
+    if (!mounted) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => _profilePage()),
+    );
+  }
+
   void _openBehavior() => Navigator.push(
     context,
     MaterialPageRoute(builder: (_) => _behaviorPage()),
@@ -527,6 +633,35 @@ class _SettingsPageState extends State<SettingsPage> {
     return _subPage(
       '自我画像',
       () => [
+        Text(_growthText),
+        Text(_lastGrowthSuccess),
+        TextButton.icon(
+          onPressed: () async {
+            if (_profileDirty) {
+              final discard = await showDialog<bool>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: const Text('丢弃未保存的画像修改？'),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text('取消'),
+                    ),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text('刷新'),
+                    ),
+                  ],
+                ),
+              );
+              if (discard != true) return;
+            }
+            _profileDirty = false;
+            await _refresh();
+          },
+          icon: const Icon(Icons.refresh),
+          label: const Text('刷新画像'),
+        ),
         SectionCard(
           children: [
             _field(_spValues, '价值观', maxLines: 4),
@@ -746,33 +881,80 @@ class _SettingsPageState extends State<SettingsPage> {
       () => [
         SectionCard(
           children: [
-            _field(_mpFastRatio, '快衰减占比（越大=情绪散得越快，默认 0.6）', keyboardType: TextInputType.number),
+            _field(
+              _mpFastRatio,
+              '快衰减占比（越大=情绪散得越快，默认 0.6）',
+              keyboardType: TextInputType.number,
+            ),
             const SizedBox(height: 12),
-            _field(_mpPositiveTauScale, '正情绪持久度（越大越持久，默认 1.5）', keyboardType: TextInputType.number),
+            _field(
+              _mpPositiveTauScale,
+              '正情绪持久度（越大越持久，默认 1.5）',
+              keyboardType: TextInputType.number,
+            ),
             const SizedBox(height: 12),
-            _field(_mpNegativeTauScale, '负情绪持久度（越大越持久，默认 0.6）', keyboardType: TextInputType.number),
+            _field(
+              _mpNegativeTauScale,
+              '负情绪持久度（越大越持久，默认 0.6）',
+              keyboardType: TextInputType.number,
+            ),
             const SizedBox(height: 12),
-            _field(_mpEmotionNudgeK, '回忆影响心情强度（越大越强，默认 0.05）', keyboardType: TextInputType.number),
+            _field(
+              _mpEmotionNudgeK,
+              '回忆影响心情强度（越大越强，默认 0.05）',
+              keyboardType: TextInputType.number,
+            ),
             const SizedBox(height: 12),
-            _field(_mpEmotionNudgeCap, '回忆影响心情上限（越大越高，默认 0.1）', keyboardType: TextInputType.number),
+            _field(
+              _mpEmotionNudgeCap,
+              '回忆影响心情上限（越大越高，默认 0.1）',
+              keyboardType: TextInputType.number,
+            ),
             const SizedBox(height: 12),
-            _field(_mpAppraisalNudgeK, '事件影响愉悦度强度（默认 0.4）', keyboardType: TextInputType.number),
+            _field(
+              _mpAppraisalNudgeK,
+              '事件影响愉悦度强度（默认 0.4）',
+              keyboardType: TextInputType.number,
+            ),
             const SizedBox(height: 12),
-            _field(_mpAppraisalArousalK, '事件影响唤醒度强度（默认 0.3）', keyboardType: TextInputType.number),
+            _field(
+              _mpAppraisalArousalK,
+              '事件影响唤醒度强度（默认 0.3）',
+              keyboardType: TextInputType.number,
+            ),
             const SizedBox(height: 12),
-            _field(_mpAppraisalDominanceK, '事件影响掌控感强度（默认 0.4）', keyboardType: TextInputType.number),
+            _field(
+              _mpAppraisalDominanceK,
+              '事件影响掌控感强度（默认 0.4）',
+              keyboardType: TextInputType.number,
+            ),
             const SizedBox(height: 12),
-            _field(_mpAppraisalAttributionK, '事件影响归因强度（默认 0.4）', keyboardType: TextInputType.number),
+            _field(
+              _mpAppraisalAttributionK,
+              '事件影响归因强度（默认 0.4）',
+              keyboardType: TextInputType.number,
+            ),
             const SizedBox(height: 12),
-            _field(_mpAppraisalMinIntensity, '忽略情绪的最低强度（默认 0.2）', keyboardType: TextInputType.number),
+            _field(
+              _mpAppraisalMinIntensity,
+              '忽略情绪的最低强度（默认 0.2）',
+              keyboardType: TextInputType.number,
+            ),
           ],
         ),
         const SizedBox(height: 16),
-        Row(children: [
-          Expanded(child: FilledButton(onPressed: () => _save(section: 'mood_params'), child: const Text('保存'))),
-          const SizedBox(width: 12),
-          TextButton(onPressed: _resetMoodParams, child: const Text('恢复默认')),
-        ]),
+        Row(
+          children: [
+            Expanded(
+              child: FilledButton(
+                onPressed: () => _save(section: 'mood_params'),
+                child: const Text('保存'),
+              ),
+            ),
+            const SizedBox(width: 12),
+            TextButton(onPressed: _resetMoodParams, child: const Text('恢复默认')),
+          ],
+        ),
       ],
     );
   }
