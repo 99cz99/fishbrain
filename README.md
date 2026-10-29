@@ -2,7 +2,7 @@
 
 一个 24h 在线、像真人一样的 AI 朋友（赛博生命体），住在安卓手机里，通过协议/API 使用 QQ 和小黑盒。B站接入仍在规划中。
 
-当前版本 **v1.0.42**（Android 8.0+）。公开安装包入口：[下载 APK](https://github.com/99cz99/fishbrain/releases/latest/download/app-release.apk) · [版本与升级说明](https://github.com/99cz99/fishbrain/releases/latest)。
+当前版本 **v1.0.43**（Android 8.0+）。公开安装包入口：[下载 APK](https://github.com/99cz99/fishbrain/releases/latest/download/app-release.apk) · [版本与升级说明](https://github.com/99cz99/fishbrain/releases/latest)。
 
 ## 架构
 
@@ -76,10 +76,11 @@ APK 输出至 `app/build/app/outputs/flutter-apk/app-release.apk`。Python 运�
 
 ## 安装包
 
-已发布 APK 与 SHA-256 校验文件见 [Releases](https://github.com/99cz99/fishbrain/releases/latest)。当前版本为 `1.0.42+56`，更新内容见[发布说明](docs/releases/v1.0.42.md)。
+已发布 APK 与 SHA-256 校验文件见 [Releases](https://github.com/99cz99/fishbrain/releases/latest)。当前版本为 `1.0.43+57`，更新内容见[发布说明](docs/releases/v1.0.43.md)。
 
 ## 文档
 
 - [记忆系统、隐私范围、成长与迁移](docs/memory-system.md)
 - [v1.0.42 发布说明](docs/releases/v1.0.42.md)
+- [v1.0.43 发布说明](docs/releases/v1.0.43.md)
 - [架构、开发约定与部署说明](CLAUDE.md)

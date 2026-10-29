@@ -14,7 +14,9 @@ except ImportError:
     sys.modules['websocket'] = Mock()
 
 from memory import Store
-from qq_bot import QQBot, cq_text
+from qq_bot import QQBot, cq_text, cq_face
+from qq_delivery import unit_text, signature
+from qq_faces import FACE_IDS
 from delivery import SendUnconfirmedError
 from qq_config import delivery_config
 import qq_media
@@ -39,6 +41,32 @@ class DeliveryTests(unittest.TestCase):
 
     def states(self):
         return [r[0] for r in self.store._conn.execute('SELECT status FROM qq_outbox ORDER BY id')]
+
+    def test_named_and_legacy_numeric_faces_are_native_segments(self):
+        for label, fid in [('白眼',22),('22',22),('4',4),('23',23),('24',24),('29',29),('0',0)]:
+            with self.subTest(label=label):
+                self.assertEqual(self.bot._to_segments(f'好[表情:{label}]呀'),
+                                 [cq_text('好'),cq_face(fid),cq_text('呀')])
+        for label in ('未知名字','-1','2.2','２２'):
+            with self.subTest(label=label):
+                tag=f'[表情:{label}]'
+                self.assertEqual(self.bot._to_segments(tag),[cq_text(tag)])
+
+    def test_face_history_round_trip_preserves_native_payload(self):
+        for fid in list(FACE_IDS.values())+[23,24,29]:
+            with self.subTest(fid=fid):
+                original=[cq_text('好'),cq_face(fid),cq_text('呀')]
+                self.assertEqual(self.bot._to_segments(unit_text(original)),original)
+                self.assertEqual(signature(self.bot._to_segments(unit_text(original))),signature(original))
+        self.assertEqual(unit_text([cq_face(22)]),'[表情:白眼]')
+
+    def test_numeric_face_send_writes_reusable_named_history(self):
+        self.bot.send_msg=Mock(return_value=self.ok)
+        self.bot._send_segments(101,['好[表情:22]'])
+        self.bot.send_msg.assert_called_once_with(101,[cq_text('好'),cq_face(22)],'private')
+        history=self.store.get_short_term()[0]['content']
+        self.assertEqual(history,'好[表情:白眼]')
+        self.assertEqual(self.bot._to_segments(history),[cq_text('好'),cq_face(22)])
 
     def test_first_part_timeout_late_self_receipt_continues_exactly_once(self):
         calls=[]

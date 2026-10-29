@@ -20,6 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
        │     autonomy.py 自主循环：心跳调度 + 工具选择层(select_tools) + 分发(_route)
        │     qq_bot.py   OneBot v11 WS 客户端 + 工具注册表(get_tools/handle_tool，约 92 个 NapCat 工具)
        │     qq_delivery.py 分段发送日志（qq_outbox）、状态确认与上下文原位回写
+       │     qq_faces.py   QQ 表情名字/编号解析与聊天历史标记，共用一份映射
        │     qq_media.py QQ 原图缓存、容器路径映射与网络图片兜底
        │     qq_config.py OneBot 发送配置迁移，保留已有凭据和其他连接
        │     delivery.py 共享发送异常（SendUnconfirmedError / SendCancelledError）
@@ -133,7 +134,7 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux /data/data/com.termux/files/usr/
 
 - **端口固定**：鱼脑 8765、NapCat WS 8081、NapCat WebUI 6099，全 127.0.0.1。
 - **部署向导区分安装与升级**：环境检查通过后才能进入安装；`allow-external-apps` 仍需用户在 Termux 设置。源码和运行脚本先写 `~/dfy/.update/`，安装环境并 `py_compile` 通过后才停止旧 supervisor/server、复制新代码并启动 supervisor；最后检查带授权的 `/status`。已有安装直接进入更新完成页，跳过模型填写与 QQ 重装。保留 config.toml、fish.db、.api-token 和 QQ 登录；config.toml 只在不存在时创建。暂存/校验失败时不停止旧服务；切换失败会报告错误，需要检查后重试，尚无自动回滚。不要仅写文件再调用启动：PID 守卫会让旧进程继续运行、新代码不生效。 更新鱼脑时也暂存并复制 `onebot11.json`，升级探活后调用 `/qq/apply_onebot`；配置确有变化时 QQ 会短暂重连，不能再承诺整个升级只重启鱼脑。已有配置满足要求时不重启 QQ。
-- **向导资源清单需联动**：新增 Python 模块除了复制到 `app/assets/fish/`，还必须登记 `wizard.dart` 的资源映射；当前 15 个运行模块均由同步脚本登记，新增的 `qq_delivery.py`、`qq_media.py`、`qq_config.py` 也必须随包部署。`WizardPage.assetLoader` 是测试注入点，生产默认读取 rootBundle。完整新装/升级真机流程仍需验证，不能把模拟命令测试当成真机端到端。
+- **向导资源清单需联动**：新增 Python 模块除了复制到 `app/assets/fish/`，还必须登记 `wizard.dart` 的资源映射；当前 16 个运行模块均由同步脚本登记，新增的 `qq_faces.py` 也必须随包部署，同时维护 `tools/deploy_memory_update.py:MODULES`。`WizardPage.assetLoader` 是测试注入点，生产默认读取 rootBundle。完整新装/升级真机流程仍需验证，不能把模拟命令测试当成真机端到端。
 - **`setup-qq.sh` / `onebot11.json` 必须与 `server.py` 同目录（Termux `~/dfy/`）**：`/deploy/qq` 读 `setup-qq.sh`、`/qq/apply_onebot` 读 `onebot11.json`。repo 里它们在 `deploy/`，app 部署向导会写入 Termux；纯 adb 手动部署时（下方命令只 push `fish/*.py` + `run-fish.sh`）需一并 push。
 - **凭据 vs 软设定**：LLM 的 key/base_url/model 存 **SQLite settings**（app「设定」页改，`/llm` 读写，`brain.py` 每次动态读）；**别**再放 config.toml。小黑盒 token 也已移到 **SQLite settings**（app「设定」页填、`/heybox` PUT 热生效；config.toml 里的旧 token 只在「从未在 app 设置过」时首次迁移一次，之后 app 是权威、清空即停用）。B站 cookie 才放 config.toml。
 - **小黑盒 hkey 签名 + 凭据**：app 接口（签到/发帖）走外部 hkey 服务 `https://hkey.qcciii.com/hkey`；web 接口（浏览/抽奖/领券）本地算 `makeWebHkey`（`heybox.py` 里 MD5+混淆，移植自 yowiv08/heybox，已用 Node 原版比对值一致）。凭据 `pkey=xxx;x_xhh_tokenid=xxx` 必须是**手机 app 版** pkey——网页版 `user_pkey` / 加速器的 pkey 都不行（签到会「请重新登录」）。
@@ -154,7 +155,8 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux /data/data/com.termux/files/usr/
 - **设置与人格重置契约**：PUT /llm 未提交的字段保留，明确提交空字符串表示清空（包括视觉模型回退）；不要恢复「所有空字符串都忽略」。人格重置同时清空 self_profile、life_state、长期记忆、短期上下文、名字和人设，防旧画像继续注入提示词；LLM 配置、审批等仍保留。
 - **诊断 QQ 的两个小坑**：① 判断 QQ 进程用 `ps -A -o CMD`（完整参数），`ps -o NAME` 只显示进程名 `qq`、会漏掉 `qq --no-sandbox` 参数导致误判「QQ 没在跑」；② `/qq/stop` 是 **POST** 端点（GET 返回 `{"error":"not found"}`），curl 要带 `-X POST`；③ 判断 QQ 状态用 `qrcode.png` 的 mtime，**别信 qq.log 文本**——NapCat 的文本日志在 proot 里会停写、只剩 hash 乱码，容易误判「QQ 卡住」而实际已出码。
 - **OneBot 消息格式**：NapCat `messagePostFormat="array"`，消息是 CQ 段数组；`qq_bot._extract_text` 处理 text/image/face/at/reply 段，引用消息走 `get_msg`（`call_api` 用 echo 匹配响应，事件在独立 worker 线程避免死锁）。
-- **回复支持 QQ 系统表情**：LLM 在正文写 `[表情:名字]`（如 `[表情:呲牙]`），`qq_bot._to_segments` 解析成 `face` 段、`_send_segments` 混合发送；`FACE_IDS` 是名字→face_id 映射，教学句从 `FACE_IDS.keys()` 生成——**别两处手改表情列表**。face id 用 **NT QQ 新版编号**（鼓掌=99/坏笑=101/委屈=106），别用老版 PC QQ 编号（42/44/49 会发成「爱情/星星/拥抱」）。
+- **回复支持 QQ 系统表情**：`qq_faces.py` 统一维护 `FACE_IDS` 与名字/编号转换，`qq_bot._to_segments` 同时接受 `[表情:名字]`（如 `[表情:呲牙]`）和旧上下文中的 `[表情:22]` 等 ASCII 非负整数编号，生成原生 `face` 段。`qq_delivery.unit_text` 回写聊天历史时优先使用中文名字，未收录名字的编号保留数字并可再次解析；平台负责校验编号。教学句从 `FACE_IDS.keys()` 生成，**别两处手改表情列表，也别回退成只识别名字**。face id 用 **NT QQ 新版编号**（鼓掌=99/坏笑=101/委屈=106），别用老版 PC QQ 编号（42/44/49 会发成「爱情/星星/拥抱」）。
+- **分多条先看实际发送记录**：回复按正文空行拆成多条，同一段内表情和文字可以在同一条。模型自称“发送坏了”不构成故障证据；先看原始回复是否有空行，再核对同批次 `qq_outbox.position/status`，需要时只读调用 `get_msg` 验证平台上是否存在各条消息。
 - **表情包本地图库**：收到 GIF（image 段）→ `_collect_sticker` SHA256 去重、写 `~/dfy/stickers/`、**自动收集用受控情绪词当默认标签**（`STICKER_EMOTIONS`，vision 同时产出描述+情绪词）、**手动标签自由文本** → SQLite `stickers` 表；回复写 `[表情包:描述]` **双向子串匹配**（`get_sticker_by_tag`：X in tag or tag in X）、读本地文件 **base64 发图**。只收 GIF、`MAX_STICKERS=200` FIFO 删最旧（跳过 pinned）、教学句 cap 30（固定优先）。
 - **表情包 app 管理**：`/stickers`（GET 列表 / POST 添加 base64 或 url）、`/stickers/<id>`（PUT 改 tag/pinned、DELETE 删行删文件）、`/stickers/<id>/image`（出图）。app「设定→管理表情包」页（`sticker.dart`）可增删/固定/改标签（自由文本 + 情绪词快捷 chips）；相册上传用 `image_picker`（**已打破零第三方依赖**），选图不传宽高/quality 以保 GIF 动画。app 的 `_EMOTIONS` 只是 UI chips，Python `STICKER_EMOTIONS` 只用于自动收集。
 - **图片 URL 别当网页抓**：`qq_bot._extract_urls` 必须跳过 `image` 段（图片 `data.url` 不是网页，`_fetch_url_content` 抓了会把 JPEG 原始字节当正文塞进上下文、变一堆二进制垃圾）。图片内容是走 `_get_image_bytes` + `_vision_or_ocr` 的，不是 URL 抓取。
@@ -171,15 +173,16 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux /data/data/com.termux/files/usr/
 - **Termux 没权限写 `/data/local/tmp`**（`drwxrwx--x shell:shell`，只有 adb/shell 能写；Termux 是普通 app UID 写不进去）。`setup-qq.sh` 下载 linuxqq/NapCat 必须写到 `$PREFIX/tmp`（`/data/data/com.termux/files/usr/tmp`），否则一下载就 Permission denied、脚本 `exit 1`——这正是「装 QQ 环境卡在安装 linuxqq」的根因。
 - **`Store.get_logs(category, level, limit)` 第二参是 `level` 不是 `limit`**：按位置传会把 limit 当 level 过滤（`WHERE level=40` 永远空）。所以 `get_logs("deploy", 40)` 是错的，要 `get_logs("deploy", limit=40)`。踩过：server.py 的 Deployer 状态、`/chat`、life.py 的「最近发生的事」都曾因此返回空。改 `get_logs` 一律用 `limit=` 关键字。
 - **`app/assets/fish/*.py` 要跟 `fish/` 同步**：那是「部署向导」写进 Termux 的嵌入副本。改完执行 `python tools/sync_fish_assets.py`，自动生成所有运行模块副本及 wizard.dart 清单；发布前 `python tools/sync_fish_assets.py --check`，不要只校验部分文件。`app/assets/deploy/` 同理同步 `setup-qq.sh`/`setup-fish.sh`/`onebot11.json`（`setup-fish.sh` 是装 Python 环境的分步脚本，`deploy/` 根目录也要留一份）。
-- **版本号**：改 `app/` 代码或嵌入资源都 bump `app/pubspec.yaml` 的 `version`（x.y.z+n）。2026-10-29 当前为 `1.0.42+56`；APK 路径 `app/build/app/outputs/flutter-apk/app-release.apk`。
+- **版本号**：改 `app/` 代码或嵌入资源都 bump `app/pubspec.yaml` 的 `version`（x.y.z+n）。2026-10-29 当前为 `1.0.43+57`；APK 路径 `app/build/app/outputs/flutter-apk/app-release.apk`。
 - **不入库**：`fish/config.toml`、`fish/fish.db`、`.api-token`、`app/android/key.properties`、keystore、`__pycache__/`、构建输出（完整清单见 `.gitignore`）。
 
 ## 最近验证（2026-10-29）
 
-- `1.0.42+56` 已覆盖安装连接的手机，鱼脑与实际 OneBot 配置已更新；APK 内 15 个运行模块及模板逐字节匹配源码，手机运行源码也与暂存版本一致。
-- 142 项 Python 回归、14 项 Flutter 测试与 Flutter 静态分析通过。真机故障历史图片恢复读取成功；更新前后记忆均为 407 条，审批条数与用户配置保持，SQLite quick_check 为 ok；QQ 在线、接收/工作线程存活、队列为 0。
-- 此次没有向 QQ 联系人发送测试消息，真实网络下的新一轮多段聊天、完整 UI 新装/升级流程和长期模型效果仍未验证。不能把部署健康检查或模拟确认测试当作真实聊天端到端验证。
-- 原因、边界和回退说明见 `docs/qq-media-send-diagnosis-2026-10-29.md`、`docs/qq-delivery-fix-2026-10-29.md` 与 `docs/releases/v1.0.42.md`。
+- `1.0.43+57` release APK 已覆盖安装连接的手机，ADB 返回 Success，实际版本号核对一致；APK 内 16 个运行模块及部署模板逐字节匹配源码，忽略换行差异后手机运行源码也与安装资源一致。沿用现有本机构建签名，未更换证书。
+- 145 项 Python 回归、14 项 Flutter 测试与 Flutter 静态分析通过。表情修复在手机上验证了名字/数字编号解析及上下文往返；该次鱼脑更新前后记忆均为 482 条，人格特质与表情包库逐行一致，审批和配置保留，SQLite quick_check 为 ok。
+- 本轮手机仅替换 `qq_bot.py`、`qq_delivery.py`、`qq_faces.py`，其余源码哈希保持；专用脚本 `tools/deploy_qq_faces_update.py` 校验暂存哈希、备份并支持切换失败回退。备份数据库仅留手机。初查发现的四个旧模块哈希差异，经后续核对为换行差异。
+- 未主动向 QQ 联系人发送测试消息；用户自然交流后，只读查询平台记录确认原生表情，以及同一轮回复的两条独立消息。安装后鱼脑 HTTP 200、QQ 在线、原有 Termux 权限仍为 granted。完整 UI 新装/升级流程及长期模型效果仍需验证。
+- 本轮说明见 `docs/qq-face-fix-2026-10-29.md` 和 `docs/releases/v1.0.43.md`；先前发送确认及图片缓存修复见 `docs/qq-delivery-fix-2026-10-29.md` 和 `docs/qq-media-send-diagnosis-2026-10-29.md`。
 
 ## 待做（详见计划文件）
 
@@ -187,6 +190,7 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux /data/data/com.termux/files/usr/
 - 部署向导端到端（阶段 B）：**已在真机 arm64 上走通**（装鱼脑 → 装 QQ → 扫码登录 → OneBot 配置 → 账号在线）。剩余：结果回传依赖较新 Termux（老 Termux 会静默失败）；QQ 登录持久化（下面那条）；B站还没接；小黑盒已接（token 走 app「设定」页配置、热生效，`/heybox` PUT）；凭据还差「手机 app 版 pkey」（网页版/加速器的 pkey 不被 app 接口认，签到会「请重新登录」）。
 - QQ 登录持久化（老硬伤）。
 - 记忆 v2 与人格成长仍需真实模型长期效果评测；本轮自动验证及真机部署状态见「最近验证」，详细边界见 `docs/memory-system.md`。
+- 已确认但本轮未修：聊天中的明确风格要求没有持久保存入口；模型自身台词可能经 belief 提炼循环固化为人格，仅提示“不把自述当证据”未能可靠阻止。后续需增加来源约束及明确风格控制，不能把该现象描述为已解决。
 - 工具多了加动态路由（`select_tools` 现在全量返回）。
 
 ## 注意

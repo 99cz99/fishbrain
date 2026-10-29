@@ -19,6 +19,7 @@ import weather
 from memory import render_self_profile, format_memory_line
 from memory_policy import data_message, evidence_data, person_code, redact_secrets, render_identity
 from delivery import SendUnconfirmedError, SendCancelledError
+from qq_faces import FACE_IDS, face_id
 import qq_media
 
 
@@ -61,15 +62,6 @@ REPLY_TEMPERATURE = 1.1
 REPLY_FREQUENCY_PENALTY = 0.4   # 降重复句式/固定开场白（DeepSeek 默认 0）
 REPLY_PRESENCE_PENALTY = 0.2    # 鼓励换话题、换措辞（DeepSeek 默认 0）
 SHORT_TERM_LIMIT = 20           # 短期上下文条数（原 10，太短容易失忆、重复）
-
-# QQ 系统表情：中文名 → face_id（经典表；真机对不上时微调）
-FACE_IDS = {
-    "惊讶": 0, "得意": 4, "流泪": 5, "睡": 8, "大哭": 9, "发怒": 11, "调皮": 12,
-    "呲牙": 13, "微笑": 14, "难过": 15, "酷": 16, "抓狂": 18, "偷笑": 20, "可爱": 21,
-    "白眼": 22, "困": 25, "憨笑": 28, "疑问": 32, "晕": 34, "擦汗": 40, "鼓掌": 99,
-    "坏笑": 101, "委屈": 106, "亲亲": 52, "玫瑰": 63, "爱心": 66, "心碎": 67, "赞": 76,
-    "胜利": 79, "抱拳": 118, "泪奔": 173, "斜眼笑": 178, "笑哭": 182,
-}
 
 # 表情包受控情绪词（vision prompt 与校验同源，别两处手改）
 STICKER_EMOTIONS = ("开心", "生气", "惊讶", "可爱", "无语", "委屈", "得意", "感动", "搞笑", "害怕", "疑惑", "无奈")
@@ -410,7 +402,7 @@ class QQBot:
         self.store.add_sticker(tag or "", path, sha)
 
     def _to_segments(self, text):
-        """把含 [表情:名字]/[表情包:描述] 的文本解析成 text/face/image 段列表。"""
+        """Parse named/numeric face tags and sticker tags into native segments."""
         text = text or ""
         segs = []
         pos = 0
@@ -420,7 +412,7 @@ class QQBot:
             kind = m.group(1)
             name = m.group(2).strip()
             if kind == "表情":
-                fid = FACE_IDS.get(name)
+                fid = face_id(name)
                 if fid is not None:
                     segs.append(cq_face(fid))
                 else:

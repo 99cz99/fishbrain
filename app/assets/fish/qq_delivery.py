@@ -5,6 +5,7 @@ import time
 import uuid
 
 from memory_policy import redact_secrets
+from qq_faces import face_tag
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS qq_outbox (
@@ -39,7 +40,7 @@ def signature(segments):
 
 def unit_text(segments):
     return ''.join(str(s['data'].get('text', '')) if s['type'] == 'text'
-                   else f"[表情:{s['data'].get('id')}]" if s['type'] == 'face'
+                   else face_tag(s['data'].get('id')) if s['type'] == 'face'
                    else f"[at:{s['data'].get('qq')}]" if s['type'] == 'at'
                    else '[图片]' for s in segments)
 

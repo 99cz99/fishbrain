@@ -20,7 +20,7 @@ ROOT = Path('/data/data/com.termux/files/home/dfy')
 STAGE = Path('/data/local/tmp/dfy-memory-20261029')
 MODULES = ('autonomy.py','brain.py','delivery.py','heybox.py','life.py','memory.py',
            'memory_policy.py','memory_system.py','personality.py','qq_bot.py','qq_config.py',
-           'qq_delivery.py','qq_media.py','server.py','weather.py')
+           'qq_delivery.py','qq_faces.py','qq_media.py','server.py','weather.py')
 DEPLOY_FILES = ('run-fish.sh','setup-fish.sh','setup-qq.sh','onebot11.json')
 
 
