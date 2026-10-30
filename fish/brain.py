@@ -5,10 +5,22 @@
 # LLM 配置（provider/base_url/api_key/model）动态读（每次调用从 get_config 拿），
 # 每次调用捕获 usage 并通过 on_usage 回调上报（用于 token 用量统计）。
 import base64
+import http.client
 import json
 import math
+import socket
+import ssl
+import time
 import urllib.error
 import urllib.request
+
+
+class LLMTransportError(RuntimeError):
+    """模型请求的网络故障；与供应商 HTTP/响应格式错误分开处理。"""
+
+    def __init__(self, message, *, retryable=True):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 class Brain:
@@ -30,6 +42,7 @@ class Brain:
             headers=headers,
             method="POST",
         )
+        started = time.monotonic()
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
@@ -50,6 +63,27 @@ class Brain:
                 pass
             detail = (detail or "").strip()
             raise RuntimeError(f"HTTP {e.code} {e.reason}" + (f": {detail}" if detail else "")) from e
+        except (urllib.error.URLError, TimeoutError, ConnectionError,
+                ssl.SSLError, http.client.IncompleteRead) as e:
+            reason = e.reason if isinstance(e, urllib.error.URLError) else e
+            certificate = isinstance(reason, ssl.SSLCertVerificationError)
+            tls_config = isinstance(reason, ssl.SSLError) and not isinstance(reason, (ssl.SSLEOFError, ssl.SSLZeroReturnError))
+            bad_host = isinstance(reason, socket.gaierror) and reason.errno in (socket.EAI_NONAME, socket.EAI_FAIL)
+            timed_out = isinstance(reason, TimeoutError) or 'timed out' in str(reason).lower()
+            if certificate:
+                kind = 'TLS 证书校验失败，请检查证书和配置'
+            elif tls_config:
+                kind = 'TLS 握手失败，请检查协议和配置'
+            elif bad_host:
+                kind = 'DNS 解析失败，请检查接口地址和 DNS 配置'
+            else:
+                kind = '超时' if timed_out else '连接中断'
+            elapsed = time.monotonic() - started
+            # 不输出 URL/原始异常，避免泄漏供应商地址中的凭据。
+            raise LLMTransportError(
+                f"LLM 请求{kind}（错误类型 {type(reason).__name__}，已等待 {elapsed:.1f} 秒，网络超时设置 {timeout} 秒）",
+                retryable=not (certificate or tls_config or bad_host),
+            ) from e
 
     def _record_tokens(self, prompt, completion):
         if self.on_usage and (prompt or completion):

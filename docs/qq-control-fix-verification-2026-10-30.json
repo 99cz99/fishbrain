@@ -1,0 +1,141 @@
+{
+  "version": "1.0.46+60",
+  "python_tests": 180,
+  "flutter_tests": 23,
+  "static_analysis": "passed",
+  "apk_sha256": "e5e6940de89e3bcb2277b573a87e70e49de8e94ac20f15c7dbb635765a157993",
+  "apk_and_runtime_modules_match": 17,
+  "cold_start": {
+    "running": true,
+    "account_ready": true,
+    "account_matches_before": true,
+    "online": true,
+    "login_phase": "ready",
+    "login_accepted": false,
+    "qr": false,
+    "desired_state": "running",
+    "operation": {
+      "id": "2015f1ebd2534f3a8a09f896a442a25a:2",
+      "kind": "quick_login",
+      "status": "completed",
+      "phase": "completed",
+      "error": "",
+      "code": "",
+      "created_at": 1793345604.644761
+    },
+    "process_known": true,
+    "processes": [
+      {
+        "pid": 25740,
+        "start": "64816268",
+        "group": 25740,
+        "role": "launcher"
+      },
+      {
+        "pid": 25744,
+        "start": "64816328",
+        "group": 25740,
+        "role": "aux"
+      },
+      {
+        "pid": 25746,
+        "start": "64816349",
+        "group": 25740,
+        "role": "aux"
+      },
+      {
+        "pid": 25756,
+        "start": "64816393",
+        "group": 25740,
+        "role": "aux"
+      },
+      {
+        "pid": 25760,
+        "start": "64816490",
+        "group": 25740,
+        "role": "main"
+      },
+      {
+        "pid": 25803,
+        "start": "64816998",
+        "group": 25740,
+        "role": "aux"
+      },
+      {
+        "pid": 25808,
+        "start": "64817028",
+        "group": 25740,
+        "role": "aux"
+      },
+      {
+        "pid": 25809,
+        "start": "64817031",
+        "group": 25740,
+        "role": "aux"
+      }
+    ],
+    "no_old_process_identity": true,
+    "elapsed": 361.1
+  },
+  "final_runtime": {
+    "control_version": 2,
+    "account_ready": true,
+    "account_matches_before": true,
+    "online": true,
+    "process_known": true,
+    "session_preserved": true,
+    "operation": {
+      "id": "2015f1ebd2534f3a8a09f896a442a25a:2",
+      "kind": "quick_login",
+      "status": "completed",
+      "phase": "completed",
+      "error": "",
+      "code": "",
+      "created_at": 1793345604.644761
+    },
+    "exercise": {},
+    "onebot_config_matches_delivery_contract": true,
+    "native_list_known": true,
+    "native_candidates": 1,
+    "empty_login_files": 2,
+    "cold_start_login_events": [
+      "10-30 07:28:40 [\u001b[32minfo\u001b[39m] 正在快速登录  <account>",
+      "10-30 07:28:50 [\u001b[32minfo\u001b[39m] [AdapterManager] OneBot11 适配器初始化完成",
+      "10-30 07:28:50 [\u001b[32minfo\u001b[39m] [AdapterManager] 协议适配器初始化完成，已加载 2 个适配器"
+    ],
+    "sqlite": "ok",
+    "runtime_hashes": {
+      "server.py": "b20e37db000b57dcaafb53a4896ab505df28ea70705d7e370ab162165149ca95",
+      "brain.py": "52357b0f2835315ca21fee4ca04c3a9223bc70f4e463c90c6b06f7885e69f97d",
+      "memory.py": "f6f923ac3de6bacb52bc01453d82ef8de3667502ead57c0b579915270e7c4bdf",
+      "qq_bot.py": "a8293438e999925ba3e200409c86aa2872d0b0c7d09df204895f0e92acc52131",
+      "autonomy.py": "392b6c0ee9631959c3329be3dfbe65bf6d2e9ad12be67ba6dd6b1867e9a9cf22",
+      "life.py": "730a7cf08c2be1194eb2266546f197ad8abe3ffcf0566abdc01801ed6651645d",
+      "heybox.py": "53e77b90795d7ce2e7368308c72f105df7c089b351fb3cfa5731ff826f0aa42d",
+      "weather.py": "f1f9264b747d791612ad7323cb3d568e3481434a93454c63e70a25accd53835b",
+      "memory_system.py": "90e7c7658a2896290f97fa4b3c3315084183bd5e7fb60ef319a6ee46650b46af",
+      "delivery.py": "ae151fbad36a468711cf623e70e5f55fc2c016905e8cec38e0c95b62a8eb4dd2",
+      "memory_policy.py": "8fb65b58413c094732aac25c0b947db22a935317944b6dbd5096747d41229b25",
+      "personality.py": "b332f29ad0ef8613524c1dca90bfd893da8469363c59bb3f7967037a1be0b5e9",
+      "qq_config.py": "e92ceee7e8087c8da349ef1e83e7a495c39fca4975cb7535e811b408abcf2a0e",
+      "qq_delivery.py": "993277bf6cb880a54bab04270bfe66a1a009b013fa3447fbd76a8b1967043ed9",
+      "qq_media.py": "ff42aa4e4dd72420b6eb61d7b6f62c24b25203b4fda3b8e27e603fea40495a3f",
+      "qq_faces.py": "3799ebcc1e3a13b164bcb842a85a2afe45fef337836c0c8310d6158912f05fa8",
+      "qq_control.py": "ddd69dcd9c6e0d9a75c96f88d6acc76f9e1f26270eaec2165a960eee6ede2a41"
+    }
+  },
+  "snapshot": {
+    "path": "/data/data/com.termux/files/home/dfy/.backups/qq-cold-20261030-152709",
+    "files": 5572,
+    "archive_bytes": 955064320,
+    "verified": true,
+    "portable_key_recovery_verified": false
+  },
+  "installed_apk_hash_matches": true,
+  "installed_version": "1.0.46+60",
+  "termux_run_command_granted": true,
+  "device_ui": {
+    "deploy_page": "QQ 已登录，OneBot 已连接",
+    "login_page": "QQ 已登录，OneBot 已连接"
+  }
+}

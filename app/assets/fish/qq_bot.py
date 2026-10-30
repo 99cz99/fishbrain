@@ -1233,7 +1233,9 @@ class QQBot:
             if account_id:
                 # 顺手记住自己的 QQ 号，供掉线后 -q 快速登录自愈用
                 try:
-                    self.store.set_setting("qq_quick_login_uin", str(account_id))
+                    self.store.set_setting("qq_last_account", str(account_id))
+                    if self.store.get_setting_raw("qq_login_target") is None:
+                        self.store.set_setting("qq_quick_login_uin", str(account_id))
                 except Exception:
                     logging.exception("QQ 快捷登录号保存失败")
                 self._log("info", "status", f"QQ 账号 {account_id} 已建立 OneBot 会话")

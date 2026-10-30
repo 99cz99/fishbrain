@@ -6,6 +6,7 @@ import math
 import time
 
 import weather
+from brain import LLMTransportError
 from memory import render_self_profile, format_memory_line, mood_param, MEMORY_EMOTION_NUDGE_K, MEMORY_EMOTION_NUDGE_CAP
 from memory_policy import TRUST_RULES, render_identity, evidence_data, data_message
 
@@ -71,8 +72,36 @@ class Life:
     def wake(self):
         """叫醒：把下次醒来时间设为现在，让心跳立刻触发。"""
         with self.store._lock:
-            st = self.state()
-            self._save(time.time(), st["last_wake_at"])
+            d = dict(self.store.get_setting_raw('life_state') or {})
+            d['next_wake_at'] = time.time()
+            d['wake_revision'] = int(d.get('wake_revision', 0)) + 1
+            self.store.set_life_state(d)
+
+    @staticmethod
+    def _schedule_key(state):
+        return tuple(state.get(k, 0) for k in ('next_wake_at', 'last_wake_at', 'wake_revision'))
+
+    def _schedule_snapshot(self):
+        with self.store._lock:
+            return (self.store.get_setting_raw('memory_epoch') or 0,
+                    self._schedule_key(self.store.get_setting_raw('life_state') or {}))
+
+    def _failure(self, exc, stage, snapshot, attempt_at=None):
+        """Preserve newer mood, but never replace an explicit wake/reset/new schedule."""
+        transient = isinstance(exc, LLMTransportError) and exc.retryable
+        minutes = MIN_NEXT_MIN if transient else 60
+        level = 'warning' if transient else 'error'
+        with self.store._lock:
+            d = dict(self.store.get_setting_raw('life_state') or {})
+            if snapshot != self._schedule_snapshot():
+                self.store.add_log(level, 'life', f'{stage}失败: {exc}；状态已变化，保留新的唤醒安排，本轮不行动')
+                return {'failed': True, 'cancelled': True, 'tool_calls': [], 'drive': 'none', 'next_wake': 0}
+            d['next_wake_at'] = time.time() + minutes * 60
+            if attempt_at is not None:
+                d['last_wake_at'] = attempt_at
+            self.store.set_life_state(d)
+            self.store.add_log(level, 'life', f'{stage}失败: {exc}；{minutes} 分钟后重新决策，本轮不行动')
+        return {'failed': True, 'tool_calls': [], 'drive': 'none', 'next_wake': minutes}
 
     # ---- 心跳（两段式：先定本能，再定动作）----
     def heartbeat(self):
@@ -94,7 +123,7 @@ class Life:
         if contagion:
             with self.store._lock:
                 if start_epoch != (self.store.get_setting_raw('memory_epoch') or 0):
-                    return {'mood': self.state()['mood'], 'drive':'none', 'next_wake':0}
+                    return {'mood': self.state()['mood'], 'drive':'none', 'next_wake':0, 'cancelled': True}
                 d = dict(self.store.get_settings().get('life_state') or {})
                 current = self.store.get_life_state()
                 d.update({k: current[k] for k in ('valence','arousal','dominance','attribution')})
@@ -105,6 +134,7 @@ class Life:
             st = self.state()
             revision = self.store.get_setting_raw('life_state_revision') or 0
             epoch = self.store.get_setting_raw('memory_epoch') or 0
+            schedule = self._schedule_snapshot()
         last_mood = st.get("mood", "")
         mood = last_mood
         valence = st.get("valence", 0.0)
@@ -154,18 +184,20 @@ class Life:
                     d = str(args.get("drive", "") or "").strip()
                     drive = d if d in ("陪伴", "表达", "好奇", "成长", "存在", "玩耍") else "none"
         except Exception as e:
-            self.store.add_log("error", "life", f"心跳异常，兜底发呆: {e}")
+            return {'mood': self.state()['mood'], **self._failure(e, '心跳', schedule, now)}
 
         next_wake_at = now + nxt * 60
         if not self._save(next_wake_at, now, mood_update, revision, epoch):
-            return {'mood': self.state()['mood'], 'drive': 'none', 'next_wake': 0}
+            return {'mood': self.state()['mood'], 'drive': 'none', 'next_wake': 0, 'cancelled': True}
         if mood_update:
             mood = self.store.get_life_state().get("mood", mood)
-        return {"mood": mood, "drive": drive, "next_wake": nxt}
+        result = {"mood": mood, "drive": drive, "next_wake": nxt}
+        return result
 
     def decide_action(self, drive, tools, extra_context=None):
-        """第二段：按 drive 拿相关工具，让 LLM 决定具体动作。返回 tool_calls 列表。
+        """第二段：返回 tool_calls 及 failed/cancelled 标记，区分休息与故障。
         extra_context：读结果回喂——把刚浏览到的内容拼进 prompt，让 LLM 决定后续。"""
+        snapshot = self._schedule_snapshot()
         try:
             settings = self.store.get_settings()
             epoch = self.store.get_setting_raw('memory_epoch') or 0
@@ -177,14 +209,13 @@ class Life:
             prompt = self._action_prompt(settings, drive, extra_context, target_scope)
             result = self.brain.chat_with_tools([{"role": "system", "content": render_identity(settings)}, {"role": "user", "content": prompt}], tools)
             allowed = {t['function']['name'] for t in tools}
-            if epoch != (self.store.get_setting_raw('memory_epoch') or 0):
-                return []
-            if render_identity(settings) != render_identity(self.store.get_settings()):
-                return []
-            return [tc for tc in (result.get("tool_calls", []) or []) if tc.get('name') in allowed]
+            if (epoch != (self.store.get_setting_raw('memory_epoch') or 0)
+                    or snapshot != self._schedule_snapshot()
+                    or render_identity(settings) != render_identity(self.store.get_settings())):
+                return {'tool_calls': [], 'cancelled': True}
+            return {'tool_calls': [tc for tc in (result.get("tool_calls", []) or []) if tc.get('name') in allowed]}
         except Exception as e:
-            self.store.add_log("error", "life", f"行动决策异常: {e}")
-            return []
+            return self._failure(e, '行动决策', snapshot)
 
     def _action_prompt(self, settings, drive, extra_context=None, target_scope='global'):
         name = (settings.get("name") or "").strip()

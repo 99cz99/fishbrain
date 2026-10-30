@@ -124,6 +124,8 @@ class Autonomy:
 
     def _heartbeat_once(self):
         decision = self.life.heartbeat()
+        if decision.get('failed') or decision.get('cancelled'):
+            return
         mood = decision.get("mood", "")
         drive = decision.get("drive", "none")
         if drive == "none":
@@ -133,7 +135,10 @@ class Autonomy:
         if not tools:
             self.store.add_log("info", "life", f"它想 {drive}，但没有可用工具")
             return
-        tool_calls = self.life.decide_action(drive, tools)
+        action = self.life.decide_action(drive, tools)
+        if action.get('failed') or action.get('cancelled'):
+            return
+        tool_calls = action['tool_calls']
         if not tool_calls:
             self.store.add_log("info", "life", f"它想 {drive}，但没动手（心情：{mood}）")
             return
@@ -155,7 +160,9 @@ class Autonomy:
                 follow_tools = [t for t in follow_tools if t['function']['name'] in ('send_message','like_master','poke_master')]
             ctx = data_message({'read_results': read_results})['content'][:24000]
             follow = self.life.decide_action('表达' if public else '陪伴', follow_tools, extra_context=ctx)
-            for tc in follow:
+            if follow.get('failed') or follow.get('cancelled'):
+                return
+            for tc in follow['tool_calls']:
                 name = tc.get("name", "")
                 args = tc.get("arguments", {}) or {}
                 self.store.add_log("info", "life", f"它接着 {name}：{args}")

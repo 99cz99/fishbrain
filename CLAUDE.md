@@ -18,6 +18,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
        │     memory.py   SQLite：软设定/长期记忆/日志/审批/token 用量/生命周期状态
        │     life.py     「心」：心跳。两段式——先定 drive（本能面），再定具体动作
        │     autonomy.py 自主循环：心跳调度 + 工具选择层(select_tools) + 分发(_route)
+       │     qq_control.py QQController：独立线程统一调度生命周期、原生登录与 WebUI 控制
        │     qq_bot.py   OneBot v11 WS 客户端 + 工具注册表(get_tools/handle_tool，约 92 个 NapCat 工具)
        │     qq_delivery.py 分段发送日志（qq_outbox）、状态确认与上下文原位回写
        │     qq_faces.py   QQ 表情名字/编号解析与聊天历史标记，共用一份映射
@@ -58,6 +59,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **PUT**：`/settings /llm /heybox /qq/quick_login_uin /stickers/<id> /memories/<id>`
 - **DELETE**：`/memories/<id> /stickers/<id>`
 
+**QQ 控制 API 契约（1.0.46 起）**：
+
+- `/qq/start`、`/qq/stop`、`/qq/quick_login`、`/qq/refresh_qr`、`/qq/apply_onebot` 成功响应只表示任务受理。读取 `/qq/status.operation` 的 `id/kind/status/phase/code/error` 确认结果；`queued/running/waiting` 为在途，`unknown` 为结果未知，不能自动重放。认证操作完成也不等于 OneBot 已连通，分别检查 `account_ready` 与 `online`。
+- 同目标、同类型的在途请求复用任务；停止可抢占。更换目标取消旧代次任务；明确停止后须先启动，不能由快捷登录或配置操作悄悄恢复。鱼脑重启后继续确认未知任务、恢复未完成停止，并保留原生拒绝结果。
+- `qq_login_target` 是用户目标（兼容旧 `qq_quick_login_uin`），`qq_last_account` 是观察到的账号；不能用生命周期事件覆盖明确目标。`qq_desired_state`、`qq_last_operation` 等内部状态受 `/settings` 写入保护，目标通过 `PUT /qq/quick_login_uin` 修改。
+- WebUI Credential 仅授权控制接口，进程会话变化时失效；仅明确鉴权拒绝允许重新鉴权一次。登录/配置写入超时不重试提交，原生账号状态未知也不能凭历史候选列表再次登录。Linux 不执行 Windows Registry20 的 GUID 修正；当前 `_refresh_device_fingerprint` 仅返回不支持诊断，不写设备身份。
+- App `ApiException` 保留业务错误码/原因，登录页和部署页读取 `QQControlStatus`，区分排队、初始化、结果未知、QQ 已登录和 OneBot 已连接。不得恢复“已提交=成功”“已配置账号=正在自愈”或所有错误都显示“鱼脑在线吗”的文案。
+
 ## app（Flutter）UI 设计体系（Liquid Glass，改 UI 先读这段）
 
 `app/lib/` 是 Liquid Glass 视觉体系（深/浅双主题，暗色为主），核心三个文件：
@@ -82,11 +91,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cd fish
 python server.py                                    # 起本地 API
-python -m py_compile server.py brain.py memory.py memory_system.py memory_policy.py personality.py life.py autonomy.py qq_bot.py qq_delivery.py qq_media.py qq_config.py heybox.py weather.py delivery.py
+python -m py_compile server.py brain.py memory.py memory_system.py memory_policy.py personality.py life.py autonomy.py qq_bot.py qq_control.py qq_delivery.py qq_faces.py qq_media.py qq_config.py heybox.py weather.py delivery.py
 curl -H "Authorization: Bearer $(cat .api-token)" http://127.0.0.1:8765/status   # 同目录探活，别打开 shell xtrace
 ```
 
-仓库根目录执行 `python -m unittest discover -s fish/tests -v` 跑 Python 回归；不使用真凭据或发送真实消息。QQ 发送与图片回归集中在 `fish/tests/test_qq_delivery.py` 和 `fish/tests/test_qq_transport.py`。
+仓库根目录执行 `python -m unittest discover -s fish/tests -v` 跑 Python 回归；不使用真凭据或发送真实消息。QQ 发送与图片回归集中在 `fish/tests/test_qq_delivery.py` 和 `fish/tests/test_qq_transport.py`；生命周期回归在 `fish/tests/test_qq_control.py`，App 状态语义在 `app/test/qq_control_test.dart`。
 
 **监管 app（Flutter，仅一个插件 image_picker）**
 ```bash
@@ -130,21 +139,28 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux /data/data/com.termux/files/usr/
 
 该脚本要求更新前已有在线 QQ 会话；先备份源码/数据库，再按运行模块白名单切换并探活，随后备份、迁移实际账号配置。运行模块切换或健康检查失败会恢复备份；配置阶段失败会报告错误，需要检查保存的 OneBot 备份，不能视为整条流程已自动回滚。成功输出含 `backup` 路径；用 `deploy_memory_update.py --verify --backup <该路径>` 复核数据和配置保留。新增运行模块时同时更新此工具的 `MODULES` 白名单。首次添加发送表还会生成 `<数据库>.pre-qq-delivery-v1.db`；备份含私人内容，仅留手机本地。回退应成套恢复源码、数据库与实际 OneBot 配置，避免混装。
 
+**QQ 控制器更新与受控验证**：
+
+- `tools/deploy_qq_control_update.py` 成套替换 `server.py`、`qq_bot.py`、`qq_control.py`，先备份源码和数据库，核对旧/新哈希，重启鱼脑后确认原 QQ 会话身份未变。暂存目录需带通用部署工具及 `qq-control-manifest.json`；每次部署重新核对基线，不能直接复用历史清单覆盖其他改动。APK 与 Termux 源码须配套更新，单装 APK 不替换已运行源码。
+- `tools/qq_control_cold_device.py prepare` 确认全部原生写入进程退出后，备份完整 Debian HOME、NapCat 配置和 machine-id，并逐文件校验；`start --backup <目录>` 先消耗单次门禁再发启动，响应丢失也不重放；`observe` 只读查询。在线复制、只备份 Login 或错位 Registry20 目录不能称为完整一致性凭据快照。
+- `tools/verify_qq_control_device.py` 只读检查；`--exercise` 要求已在线，验证已登录短路及配置应用，不发送聊天。`recover_qq_scan_device.py` 已改为请求控制器换码，不再绕过调度杀进程或直接另启 proot。
+- 原生快照含私人数据，只留手机本地。文件复制不能承诺恢复外部/系统绑定密钥；恢复数据库或原生资料须先停对应写入者并审查快照之后的数据，不能覆盖在线目录。详见 `docs/releases/v1.0.46.md`。
+
 ## 关键约定 / 坑（硬经验，别重踩）
 
 - **端口固定**：鱼脑 8765、NapCat WS 8081、NapCat WebUI 6099，全 127.0.0.1。
-- **部署向导区分安装与升级**：环境检查通过后才能进入安装；`allow-external-apps` 仍需用户在 Termux 设置。源码和运行脚本先写 `~/dfy/.update/`，安装环境并 `py_compile` 通过后才停止旧 supervisor/server、复制新代码并启动 supervisor；最后检查带授权的 `/status`。已有安装直接进入更新完成页，跳过模型填写与 QQ 重装。保留 config.toml、fish.db、.api-token 和 QQ 登录；config.toml 只在不存在时创建。暂存/校验失败时不停止旧服务；切换失败会报告错误，需要检查后重试，尚无自动回滚。不要仅写文件再调用启动：PID 守卫会让旧进程继续运行、新代码不生效。 更新鱼脑时也暂存并复制 `onebot11.json`，升级探活后调用 `/qq/apply_onebot`；配置确有变化时 QQ 会短暂重连，不能再承诺整个升级只重启鱼脑。已有配置满足要求时不重启 QQ。
-- **向导资源清单需联动**：新增 Python 模块除了复制到 `app/assets/fish/`，还必须登记 `wizard.dart` 的资源映射；当前 16 个运行模块均由同步脚本登记，新增的 `qq_faces.py` 也必须随包部署，同时维护 `tools/deploy_memory_update.py:MODULES`。`WizardPage.assetLoader` 是测试注入点，生产默认读取 rootBundle。完整新装/升级真机流程仍需验证，不能把模拟命令测试当成真机端到端。
+- **部署向导区分安装与升级**：环境检查通过后才能安装；`allow-external-apps` 需用户在 Termux 设置。源码及脚本先写 `~/dfy/.update/`，环境安装和编译通过后才停止旧 supervisor/server、复制新代码并启动，最后检查带授权的 `/status`。已有安装跳过模型填写与 QQ 重装，保留 config.toml、fish.db、.api-token 和 QQ 资料；config.toml 只在不存在时创建。暂存失败不停止旧服务，向导切换失败会报告错误，尚无自动回滚。不能仅写文件再调用启动，否则 PID 守卫会保留旧代码。更新时一并暂存 `onebot11.json`，探活后提交 `/qq/apply_onebot`；新后端热加载 OneBot，网络连接可能短暂重建，但不为此重启原生 QQ。
+- **向导资源清单需联动**：新增模块须同步 `app/assets/fish/`、`wizard.dart` 资源映射及 `tools/deploy_memory_update.py:MODULES`；当前 17 个运行模块包含 `qq_control.py`、`qq_faces.py`。使用同步脚本及 `--check` 校验全部模块。`WizardPage.assetLoader` 是测试注入点，生产默认读取 rootBundle。完整新装/升级向导仍需真机验证，不能以模拟命令测试替代。
 - **`setup-qq.sh` / `onebot11.json` 必须与 `server.py` 同目录（Termux `~/dfy/`）**：`/deploy/qq` 读 `setup-qq.sh`、`/qq/apply_onebot` 读 `onebot11.json`。repo 里它们在 `deploy/`，app 部署向导会写入 Termux；纯 adb 手动部署时（下方命令只 push `fish/*.py` + `run-fish.sh`）需一并 push。
 - **凭据 vs 软设定**：LLM 的 key/base_url/model 存 **SQLite settings**（app「设定」页改，`/llm` 读写，`brain.py` 每次动态读）；**别**再放 config.toml。小黑盒 token 也已移到 **SQLite settings**（app「设定」页填、`/heybox` PUT 热生效；config.toml 里的旧 token 只在「从未在 app 设置过」时首次迁移一次，之后 app 是权威、清空即停用）。B站 cookie 才放 config.toml。
 - **小黑盒 hkey 签名 + 凭据**：app 接口（签到/发帖）走外部 hkey 服务 `https://hkey.qcciii.com/hkey`；web 接口（浏览/抽奖/领券）本地算 `makeWebHkey`（`heybox.py` 里 MD5+混淆，移植自 yowiv08/heybox，已用 Node 原版比对值一致）。凭据 `pkey=xxx;x_xhh_tokenid=xxx` 必须是**手机 app 版** pkey——网页版 `user_pkey` / 加速器的 pkey 都不行（签到会「请重新登录」）。
 - **QQ 用 NapCat 不是 Lagrange**：Lagrange 签名服务器停服。NapCat 在 proot-Debian 跑 linuxqq + xvfb，flags：`--no-sandbox --disable-gpu --disable-dev-shm-usage --no-zygote --use-gl=swiftshader`。
 - **proot 版本坑（血泪）**：proot **5.1.107.99 有段错误回归**（跑 linuxqq 就 `proot warning: signal 11` 崩），5.1.107.100 修复。`deploy/setup-qq.sh` 已 pin 5.1.107.100。**QQ 起不来、proot 报 signal 11，先查 proot 版本**。另外 proot 是动态链接 libtalloc/libtermux-exec，`pkg upgrade` 会升级这些依赖。
 - **Python 升级坑**：Termux Python 3.13→3.14 会搞坏 `proot-distro` 的 shebang（`#!/.../python3.13` 指向被删的版本）+ 把 `websocket-client` 留在旧 site-packages。症状：proot-distro 报 `No such file or directory`、`import websocket` 失败。修：`pkg upgrade` + `pip install websocket-client`。
-- **QQ 登录不持久（keystore 落不了盘的根因已定位）**：keystore 在 `~/.config/QQ/global/nt_data/Login/.{uin}`，0 字节=没落盘。**实测 SIGTERM + `sleep 15` 优雅退出后 keystore 仍是 0 字节**——根因不是「没走到优雅退出」，而是 **proot 里 device.json（设备指纹）生成不出**（linuxqq 生成设备指纹要读硬件信息，ptrace 模拟下 syscall 失败），keystore 是加密凭据、拿不到 device.json 的设备密钥就写不进。佐证：mmkv（不加密普通状态）能正常写盘，keystore（加密）写不进。根治靠 chroot 绕开 proot。试过伪造 `/sys` 的 MAC、固定 hostname（`proot-distro login --hostname`）**均无效**——device.json 需**完整硬件序列号**（CPU/磁盘/主板 serial），proot 里 `/proc` 透传宿主（ARM 无 serial 字段）、`/sys` 空，读不到且伪造不了。QQ 风控会拦（人脸/`ErrCode 3`/「已登录」），**别频繁重登**。后续调研（NapCat PR #2099 / DeepWiki）发现设备标识在 Linux 上可能并非「CPU/磁盘/主板 serial」，而是「MAC 的 ROT13 编码 + `/etc/machine-id` 的 MD5」、存于 QQ 数据目录 `Registry20/machine-info`（回退链优先读 `machineid-info` 文件），NapCat 有 GUID 管理（`SetMacMachineId`/`RestoreMacInfoBackup`，PR 以 macOS 为主，Linux 需实测）。rootless 侧已做「快捷登录自愈 + 设备指纹稳定化」（见下条）；keystore 落盘根治仍是 chroot。
-- **QQ 掉线自愈 + 诊断字段**：`qq_keep_alive` 进程没了→自动拉起（有快捷登录号 `qq_quick_login_uin` 则 `-q` 免扫码，否则等人扫码）；「进程活着但掉线、无新鲜码」（`_qq_stale`）→ 软掉线（`offline`/`login_service_dropped`/`nt_timeout`）先走 **NapCat WebUI（127.0.0.1:6099）`SetQuickLogin` 免重启快登**（token 读 `webui.json`，`/api/auth/login` 拿 Bearer，1h 有效），失败回退 `-q` 重启；硬掉线/没配号只按 `QQ_STALE_RESTART_COOLDOWN=900` 节流记日志、交 `qq_bot` 5s 重连。设备指纹每 600s 捕获比对（`_refresh_device_fingerprint`），漂移告警并 `SetDeviceGUID` 纠偏（治「频繁掉线」根因；`deploy/setup-qq.sh` 全新安装时固定 `/etc/machine-id`）。`/qq/status` 字段：`stale`/`self_healing`/`quick_login_configured`/`device_guid`/`login_reason`（`nt_timeout`/`offline`/`login_service_dropped`/`waiting_scan`/`risk`/`login_error_N`/`unknown`，`_parse_qq_log_state` 解析 qq.log 尾部）；ErrCode 无官方语义、只中性保留码号，风控只看明确文案（人脸/安全验证/冻结等）；app 登录页据此显示「掉线（快捷登录自愈中）+ 原因」+「快速登录」按钮。
-- **`/qq/status` 在线状态的优先级**：`online = bool(connected and self_id and account_online is not False)`。`connected` 是 WS 连接，`self_id` 是会话身份，`account_online` 来自心跳/成功空闲探测的明确布尔值（null=未知）；平台明确报告离线优先于历史身份。断开清空身份与账号状态。`transport` 暴露线程存活、队列大小、收帧/收消息时间、处理起点、空闲探测次数和账号状态，均随进程重启重置；在线时 `login_reason` 为 unknown，旧 QQ 日志只作离线诊断线索。
-- **QQ 自动拉起熔断**：`qq_keep_alive` 连续 `QQ_AUTO_MAX_FAIL=5` 次自动拉起仍无法稳定在线 → 熔断 `QQ_AUTO_CIRCUIT_SECONDS=1800` 秒不拉起；只有「持续稳定在线 `QQ_AUTO_STABLE_SECONDS=300` 秒」或「用户显式启动 QQ」才清零。`/qq/status` 暴露 `auto_circuit`/`auto_fail_count`，app 部署页显示「已熔断」提示。注意：`qq_start(reset_circuit=False)` 是参数化的——只有 `/qq/start` 端点、`qq_refresh_qr` 传 `reset_circuit=True` 清零，自动拉起路径不传（否则计数永远累加不到阈值）。
+- **QQ 免扫码登录的证据边界**：设备同哈希 NapCat 包表明 WebUI `SetQuickLogin` 与 Shell `-q` 最终调用同一 NTQQ 原生快捷登录；WebUI Credential、账号选择与原生票据须分开诊断。1.0.46 已验证同一设备/UID/版本/资料与身份下，一次完整 QQ 进程退出后无需扫码恢复，两个 `global/nt_data/Login/.<account>` 文件仍为 0 字节。不能据此判定票据未落盘，空文件的具体角色也未证实；已撤回“device.json 已定因、必须 chroot”的旧断言。手机重启、强制回收及快照恢复尚未验证。详见 `docs/qq-login-chain-audit-2026-10-30.md` 和 `docs/releases/v1.0.46.md`。
+- **QQ 操作统一调度**：`qq_control.QQController` 独立于 LLM 心跳线程，启动、停止、重启、快捷登录、换码及配置应用都经统一调度。停止可抢占；副作用前校验任务代次、目标账号、平台开关及明确停止意图。不得绕过控制器另起线程杀 QQ、启动 proot 或调用原生登录。初始化、重连、账号状态未知或动作结果未知时保留会话并查询，禁止自动重复登录或回退重启。`quick_login_configured` 只表示保存账号，`self_healing` 只表示有在途任务，都不保证认证成功。
+- **`/qq/status` 当前在线证据**：`control_version=2`：`account_ready` 要求当前原生 `isLogin`、`coreReady` 及账号信息齐备；`online` 还要求 OneBot 已连接、身份匹配，且本代 QQ 会话开始后收到过有效帧。账号与业务传输分开判断，旧身份、TCP 端口或配置文件存在不能作为在线证据。原生状态约每 4 秒查询，超过 15 秒的证据失效；进程身份变化清空缓存。`transport` 继续提供线程、收帧、队列及发送诊断，旧日志不参与当前状态控制。
+- **QQ 自动拉起熔断**：控制器启动宽限 120 秒，自动启动间隔至少 120 秒，明确离线时快捷登录间隔至少 900 秒；自动启动预算累计达到 5 时熔断 1800 秒。业务稳定在线 300 秒后清零，接受手动操作也重置预算。明确停止、平台禁用、已有任务、等待扫码/验证或原生失败结果时不自动叠加启动。`qq_desired_state` 跨鱼脑重启保留；保活脱离 LLM 线程不等于解决 Android 低内存回收。
 - **发 QQ 空间动态（publish 审批链路）**：`publish` 工具（`life.action_tools()` 和聊天场景都有）走审批 `kind="publish"`，summary 是**纯文本 detail（正文）非 JSON**；同意后 `execute_approval` 调 `qq_bot.send_qzone_mood(text)` → `call_api("send_qzone_msg")` 发说说。坑：NapCat action 名是 **snake_case `send_qzone_msg`**，不是 `SendQzoneMsg`；`send_qzone_mood` 里失败（retcode != 0）会 `add_log("error","qq",...)` 记录。
 - **QQ 断连诊断信号优先级（别误判）**：「测试Packet 超时」和启动时的「等待网络连接/网络已连接」不能证明账号掉线；明确的账号离线事件才是账号状态证据。**recv 超时也不能直接判定 NapCat 卡死**：模板心跳 30 秒，实测正常间隔可超过 30 秒。当前空闲 30 秒后直接发送只读 `get_status`，再等 10 秒；期间收到有效 JSON 对象即恢复正常等待，否则关闭连接、5 秒后重连。探测不能调用会等待接收线程回填的 `call_api`，否则死锁；探测次数不是故障次数。空帧立即按连接关闭处理。账号状态/API 响应优先在接收线程处理，生命周期落库及耗时业务走 worker。详情见 `docs/qq-transport.md`。
 - **发送确认与异常分类**：NapCat `timeout.baseTimeout` 至少 30000ms，鱼脑 `SEND_CONFIRM_TIMEOUT=45` 秒，未知后 `SEND_LATE_GRACE=30` 秒补等；自身消息可在等待 API 时提前确认，不必等满超时。`SendUnconfirmedError` 表示已提交但结果未知，记 warning/action，禁止外层改写为「发送失败」或自动重发；`SendCancelledError` 表示回复过时/控制条件改变，正常取消记 info/action。明确平台拒绝才记失败。`/qq/api.ok` 仍要求成功 API 响应；发送侧确认不等于对方已读。API 请求固定原连接、echo 唯一，迟到成功响应按原 echo 关联。日志落库失败回退 stderr，不能杀死传输线程。详情见 `docs/qq-transport.md` 和 `docs/qq-delivery-fix-2026-10-29.md`。
@@ -153,7 +169,7 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux /data/data/com.termux/files/usr/
 - **戳一戳方向**：NapCat 私聊 `user_id` 是会话对象，`sender_id` 才是发起者、`target_id` 是目标；群聊以 `user_id` 为发起者。身份优先取事件 self_id，回退当前会话；缺字段记未知，别猜成被戳。group_id 缺失/0 为私聊，别输出「群 None」。自主戳动按 API 返回值区分确认/未知/拒绝，事件日志再记录实际方向。
 - **好友/加群审批需保留平台参数**：kind 为 friend/group 的 summary 是 JSON（summary、flag、sub_type），界面展示其中 summary。同意与拒绝都调用对应 OneBot API；数据库以 pending 条件更新，防重复执行。平台未确认或旧记录缺 flag 时记录 failed 并返回错误，不静默显示成功、不自动重试；旧申请需重新发起。不要把 publish 的纯文本正文改成这套 JSON。
 - **设置与人格重置契约**：PUT /llm 未提交的字段保留，明确提交空字符串表示清空（包括视觉模型回退）；不要恢复「所有空字符串都忽略」。人格重置同时清空 self_profile、life_state、长期记忆、短期上下文、名字和人设，防旧画像继续注入提示词；LLM 配置、审批等仍保留。
-- **诊断 QQ 的两个小坑**：① 判断 QQ 进程用 `ps -A -o CMD`（完整参数），`ps -o NAME` 只显示进程名 `qq`、会漏掉 `qq --no-sandbox` 参数导致误判「QQ 没在跑」；② `/qq/stop` 是 **POST** 端点（GET 返回 `{"error":"not found"}`），curl 要带 `-X POST`；③ 判断 QQ 状态用 `qrcode.png` 的 mtime，**别信 qq.log 文本**——NapCat 的文本日志在 proot 里会停写、只剩 hash 乱码，容易误判「QQ 卡住」而实际已出码。
+- **QQ 进程与二维码诊断**：使用 `ProcessManager` 验证同 UID 的可执行文件、PID/启动时间及专属 proot 会话组；不能仅用命令字符串含 QQ 判断主进程，禁止 `pkill -f` 广泛匹配 QQ。先退出原生主进程，再清理会话组，未确认退出禁止叠加启动。Android 外部 UID 的 hidepid 拒绝与本 UID 信息不可读须区分。`/qq/stop` 为 POST，只返回任务受理；二维码须属于当前会话且足够新，mtime 或日志都不能证明账号已登录。
 - **OneBot 消息格式**：NapCat `messagePostFormat="array"`，消息是 CQ 段数组；`qq_bot._extract_text` 处理 text/image/face/at/reply 段，引用消息走 `get_msg`（`call_api` 用 echo 匹配响应，事件在独立 worker 线程避免死锁）。
 - **回复支持 QQ 系统表情**：`qq_faces.py` 统一维护 `FACE_IDS` 与名字/编号转换，`qq_bot._to_segments` 同时接受 `[表情:名字]`（如 `[表情:呲牙]`）和旧上下文中的 `[表情:22]` 等 ASCII 非负整数编号，生成原生 `face` 段。`qq_delivery.unit_text` 回写聊天历史时优先使用中文名字，未收录名字的编号保留数字并可再次解析；平台负责校验编号。教学句从 `FACE_IDS.keys()` 生成，**别两处手改表情列表，也别回退成只识别名字**。face id 用 **NT QQ 新版编号**（鼓掌=99/坏笑=101/委屈=106），别用老版 PC QQ 编号（42/44/49 会发成「爱情/星星/拥抱」）。
 - **分多条先看实际发送记录**：回复按正文空行拆成多条，同一段内表情和文字可以在同一条。模型自称“发送坏了”不构成故障证据；先看原始回复是否有空行，再核对同批次 `qq_outbox.position/status`，需要时只读调用 `get_msg` 验证平台上是否存在各条消息。
@@ -161,7 +177,7 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux /data/data/com.termux/files/usr/
 - **表情包 app 管理**：`/stickers`（GET 列表 / POST 添加 base64 或 url）、`/stickers/<id>`（PUT 改 tag/pinned、DELETE 删行删文件）、`/stickers/<id>/image`（出图）。app「设定→管理表情包」页（`sticker.dart`）可增删/固定/改标签（自由文本 + 情绪词快捷 chips）；相册上传用 `image_picker`（**已打破零第三方依赖**），选图不传宽高/quality 以保 GIF 动画。app 的 `_EMOTIONS` 只是 UI chips，Python `STICKER_EMOTIONS` 只用于自动收集。
 - **图片 URL 别当网页抓**：`qq_bot._extract_urls` 必须跳过 `image` 段（图片 `data.url` 不是网页，`_fetch_url_content` 抓了会把 JPEG 原始字节当正文塞进上下文、变一堆二进制垃圾）。图片内容是走 `_get_image_bytes` + `_vision_or_ocr` 的，不是 URL 抓取。
 - **图片失败先查 Rkey 和原图缓存**：Rkey 返回格式错误/TLS 失败会使图片 URL 无效，`get_image` 也可能返回 file not found。`qq_media.py` 优先按合法 MD5 标识定位 QQ `nt_data/Pic/*/Ori` 原图并校验文件 MD5，再尝试消息 URL、API 文件/URL，API 后再查缓存；URL 失败不能跳过本地文件。容器路径只映射到限定缓存目录，检查路径逃逸、图片头与 20 MiB 上限。错误日志仅记录来源、错误类型和 HTTP/API 状态，不打印签名 URL、Rkey 或私有路径。外部 Rkey 服务故障本身未修复；无缓存且远程不可用的新图仍可能失败。
-- **OneBot 首次配置与升级迁移**：首次生成的 `onebot11_<uin>.json` 可能是空 `websocketServers`，需登录后配置 8081。`server.py:apply_onebot` 使用 `qq_config.delivery_config` 合并实际账号配置，保留令牌、其他连接和自定义设置，同时补齐自身消息回报/数组格式/事件推送及基础等待时间；不能仅看已有 8081 就跳过升级。只有合并结果变化才写文件并重启 QQ，重启优先传原账号做快捷登录。`_find_login_uin` 的文件名探测仍只认最近 `QQ_LOGIN_UIN_FRESH_SECONDS=600` 秒内生成的文件，旧残留不证明已登录。
+- **OneBot 首次配置与升级迁移**：首次账号配置可能缺少 WS 8081；`QQBackend.configure()` 用 `qq_config.delivery_config` 合并当前配置和模板，保留令牌、其他连接及自定义设置，补齐发送回报/数组格式/事件推送和等待时间。通过 WebUI `GetConfig` 读取，变化时向 `SetConfig` 提交 `{"config": "序列化后的 JSON 字符串"}`，由 NapCat 保存并热加载网络；不得重启原生 QQ 来修 OneBot。写结果未知时只读回查，不重复写入。只有当前原生认证成立后才能配置，旧配置文件名及 `_find_login_uin` 不能作为认证依据。
 - **QQ 起不来的另一个坑：`/root/napcat` 目录不存在**：`_qq_start_cmd()` 把日志写到 `/root/napcat/qq.log`、`xvfb.log`，但 `setup-qq.sh` 没建这个目录 → 重定向失败、`./qq` 根本没跑（症状：部署页「未运行」）。现在 `_qq_start_cmd()` 开头 `mkdir -p /root/napcat` 兜底，`setup-qq.sh` 也建了 `$DEBIAN_ROOTFS/root/napcat`。
 - **NapCat 下载镜像会失效**：`setup-qq.sh` 里 GitHub 回退镜像 `ghproxy.net` 已死（502），现用 `gh-proxy.com` + `gh.llkk.cc` 双回退（`NAPCAT_ZIP_GH`/`NAPCAT_ZIP_GH2`）。这类第三方 GitHub 镜像经常挂，**下次 NapCat 下载失败先 `curl -I` 测这些 URL 还活着没**。linuxqq 的腾讯 CDN 固定版本 URL 也是「会过期」的老隐患。
 - **app 起鱼脑走 TermuxRunner**：`app/lib/termux.dart` 经 MethodChannel `dfy/termux`（`MainActivity.kt`）`startForegroundService(intent)` 触发 Termux RunCommandService（是服务、不是广播）。**AndroidManifest 必须有 `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_SPECIAL_USE` 权限**——之前「启动失败」就是漏了 FOREGROUND_SERVICE。冷启动命令前台阻塞、无 `&`（带 `&` 会被 Termux 清掉）。`run()` 发完即忘（起长驻 server.py 用）；`runAndWait()` 挂 `PendingIntent`（extra `com.termux.RUN_COMMAND_PENDING_INTENT`）+ 动态 BroadcastReceiver，回传 `result` bundle 的 `stdout`/`stderr`/`exitCode`（装环境等有限时长命令用）。**血泪：这个 PendingIntent 必须用 `FLAG_MUTABLE`，不能用 `FLAG_IMMUTABLE`**——IMMUTABLE 会让 Termux `send(code, resultIntent)` 的结果 extras 合并不进来，receiver 只能拿到 base intent 的 `sessionId`、拿不到 `result` bundle（`exitCode=-1` 静默误判失败）。结果 bundle 的 key 是 `"result"`（外层）、`"stdout"`/`"stderr"`/`"exitCode"`（内层）。
@@ -173,7 +189,21 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux /data/data/com.termux/files/usr/
 - **Termux 没权限写 `/data/local/tmp`**（`drwxrwx--x shell:shell`，只有 adb/shell 能写；Termux 是普通 app UID 写不进去）。`setup-qq.sh` 下载 linuxqq/NapCat 必须写到 `$PREFIX/tmp`（`/data/data/com.termux/files/usr/tmp`），否则一下载就 Permission denied、脚本 `exit 1`——这正是「装 QQ 环境卡在安装 linuxqq」的根因。
 - **`Store.get_logs(category, level, limit)` 第二参是 `level` 不是 `limit`**：按位置传会把 limit 当 level 过滤（`WHERE level=40` 永远空）。所以 `get_logs("deploy", 40)` 是错的，要 `get_logs("deploy", limit=40)`。踩过：server.py 的 Deployer 状态、`/chat`、life.py 的「最近发生的事」都曾因此返回空。改 `get_logs` 一律用 `limit=` 关键字。
 - **`app/assets/fish/*.py` 要跟 `fish/` 同步**：那是「部署向导」写进 Termux 的嵌入副本。改完执行 `python tools/sync_fish_assets.py`，自动生成所有运行模块副本及 wizard.dart 清单；发布前 `python tools/sync_fish_assets.py --check`，不要只校验部分文件。`app/assets/deploy/` 同理同步 `setup-qq.sh`/`setup-fish.sh`/`onebot11.json`（`setup-fish.sh` 是装 Python 环境的分步脚本，`deploy/` 根目录也要留一份）。
-- **版本号**：改 `app/` 代码或嵌入资源都 bump `app/pubspec.yaml` 的 `version`（x.y.z+n）。2026-10-29 当前为 `1.0.43+57`；APK 路径 `app/build/app/outputs/flutter-apk/app-release.apk`。
+- **版本号**：改 `app/` 代码或嵌入资源都 bump `app/pubspec.yaml` 的 `version`（x.y.z+n）。2026-10-30 当前为 `1.0.46+60`；APK 路径 `app/build/app/outputs/flutter-apk/app-release.apk`。
+- **心跳恢复契约**：`Life.decide_action()` 返回含 `tool_calls` 与可选 `failed/cancelled` 标记的对象；首轮和读结果回喂都必须检查。失败退避保存合并最新心情，不能用完整情绪版本直接取消调度；明确叫醒用 `life_state.wake_revision`、记忆重置用 epoch 保护。详见 `docs/heartbeat-timeout-fix-2026-10-30.md`。
+
+## 最近验证（2026-10-30）
+
+- GitHub 发布：`v1.0.46`，附 `app-release.apk` 与 `app-release.apk.sha256`；源码、测试及本轮修复/验收文档同步至仓库。APK SHA-256 为 `e5e6940de89e3bcb2277b573a87e70e49de8e94ac20f15c7dbb635765a157993`，发布说明须保留一次完整 QQ 冷启动与手机重启/强制回收未验证的区别。
+
+- `1.0.46+60` 已配套更新 App 和 Termux；180 项 Python、23 项 Flutter 测试及静态分析通过。统一 QQController 独立于 LLM 线程，所有 QQ 操作异步串行，停止抢占并持久化；未知结果和原生初始化不重复登录，OneBot 配置热应用。17 个运行模块与 APK/设备一致。完整旧 QQ 退出并校验 5,572 文件快照后，新进程一次带 -q 启动，无再次扫码恢复同一账号 ready 及 OneBot 在线。两个 Login 文件仍为 0 字节，因此不能作为票据健康指标；手机重启/强制回收及快照恢复未验证。详见 `docs/releases/v1.0.46.md`。
+- 该次完整冷启动停止确认约 14.14 秒，23.1 秒观察到新进程初始化，55.5 秒已确认同一账号 ready 和 OneBot 在线。最终 APK 与设备 `base.apk` 哈希一致，Termux 命令权限保留；真机「部署」「扫码登录」两页均显示“QQ 已登录，OneBot 已连接”。已登录快捷登录/配置任务完成时原生会话保持不变，SQLite quick_check 为 `ok`。脱敏证据见 `docs/qq-control-fix-verification-2026-10-30.json`；这些是当次验证结果，不代表实时在线监测。
+
+- QQ 后续恢复：用户扫码后曾确认账号 online、WebUI ready 与 OneBot 在线。Login 目录空文件仍存在，但其角色及真实票据存储位置未证实，不能称为凭据未落盘。原停止流程会匹配启动器，WebUI 失败回退及阶段判断已由后续 1.0.46 修复。2026-10-30 的源码链路审查与 9 个隔离复现见 `docs/qq-login-chain-audit-2026-10-30.md`；该审查阶段未退出当前在线会话，后续冷启动验证见 1.0.46 记录。
+- 启动确认后续修复：`1.0.45+59` 已安装；18 项 Flutter 测试及静态分析通过。手机从 App 点停止再启动，实测冷启动约 22 秒恢复在线，最后保持运行；不再固定等 3 秒就提示未确认。运行源码无需再次更新。详见 `docs/releases/v1.0.45.md`。
+- `1.0.44+58` APK 已覆盖安装；手机三个心跳模块配套更新，全部 16 个运行模块与 APK 一致，配置、令牌和其余源码保留。数据库与更新前备份一致，528 条记忆，完整性检查为 ok。更新前鱼脑已停止，更新后保持停止。
+- 164 项 Python 回归、15 项 Flutter 测试、Flutter 静态分析、APK 构建及手机隔离验证通过。未运行真实模型生成或发送消息；尚未验证安装后的在线心跳。没有修改手机后台策略或远端发布。
+- 专用更新工具 `tools/deploy_heartbeat_update.py` 与只读验证工具 `tools/verify_heartbeat_update.py`；说明见 `docs/releases/v1.0.44.md`。同线程 QQ 保活延迟已在 1.0.46 通过独立控制器处理；系统低内存回收仍需独立验证。
 - **不入库**：`fish/config.toml`、`fish/fish.db`、`.api-token`、`app/android/key.properties`、keystore、`__pycache__/`、构建输出（完整清单见 `.gitignore`）。
 
 ## 最近验证（2026-10-29）
@@ -187,8 +217,8 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux /data/data/com.termux/files/usr/
 ## 待做（详见计划文件）
 
 - `fish/` 里 `bilibili.py` 还没写（B站签到/发布）。小黑盒 `heybox.py` 已写（签到/抽奖/领券/发帖/评论/浏览；发帖/评论走审批，同意后 `server.execute_approval` 真正执行；读结果回喂走 `life.decide_action` 的 `extra_context`）。
-- 部署向导端到端（阶段 B）：**已在真机 arm64 上走通**（装鱼脑 → 装 QQ → 扫码登录 → OneBot 配置 → 账号在线）。剩余：结果回传依赖较新 Termux（老 Termux 会静默失败）；QQ 登录持久化（下面那条）；B站还没接；小黑盒已接（token 走 app「设定」页配置、热生效，`/heybox` PUT）；凭据还差「手机 app 版 pkey」（网页版/加速器的 pkey 不被 app 接口认，签到会「请重新登录」）。
-- QQ 登录持久化（老硬伤）。
+- 部署向导端到端（阶段 B）：**已在真机 arm64 上走通**（装鱼脑 → 装 QQ → 扫码登录 → OneBot 配置 → 账号在线）。剩余：结果回传依赖较新 Termux（老 Termux 会静默失败）；QQ 恢复的剩余故障模式验证（见下一条）；B站还没接；小黑盒已接（token 走 app「设定」页配置、热生效，`/heybox` PUT）；凭据还差「手机 app 版 pkey」（网页版/加速器的 pkey 不被 app 接口认，签到会「请重新登录」）。
+- QQ 恢复后续验证：一次完整进程重启免扫码已通过受控对照；继续分别验证手机重启、系统强制回收、长期稳定性和备份恢复。空文件角色及原生票据内部存储未证实，不再将“0 字节”作为故障指标。
 - 记忆 v2 与人格成长仍需真实模型长期效果评测；本轮自动验证及真机部署状态见「最近验证」，详细边界见 `docs/memory-system.md`。
 - 已确认但本轮未修：聊天中的明确风格要求没有持久保存入口；模型自身台词可能经 belief 提炼循环固化为人格，仅提示“不把自述当证据”未能可靠阻止。后续需增加来源约束及明确风格控制，不能把该现象描述为已解决。
 - 工具多了加动态路由（`select_tools` 现在全量返回）。

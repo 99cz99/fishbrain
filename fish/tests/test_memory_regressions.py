@@ -265,7 +265,7 @@ class AuditRegressions(unittest.TestCase):
     def test_model_cannot_return_public_tool_from_private_generation(self):
         brain=Mock(chat_with_tools=Mock(return_value={'tool_calls':[{'name':'publish','arguments':{'detail':'private'}}]}))
         life=Life(self.store,brain)
-        self.assertEqual(life.decide_action('陪伴',[{'function':{'name':'send_message'}}]),[])
+        self.assertEqual(life.decide_action('陪伴',[{'function':{'name':'send_message'}}])['tool_calls'], [])
         code="from memory import Store; s=Store(':memory:'); s.set_setting('city','audit-city'); import weather; weather.get_weather_mood=lambda city:0; from life import Life; from unittest.mock import Mock; life=Life(s,Mock()); life.state(); life.heartbeat(); s.close()"
         # Verify the actual packaged API exists before stubbing external weather I/O.
         code="import weather; assert callable(weather.get_weather_mood); " + code

@@ -7,6 +7,21 @@ import 'dart:typed_data';
 import 'models.dart';
 import 'termux.dart';
 
+class ApiException implements Exception {
+  final String code;
+  final String message;
+  ApiException(this.code, this.message);
+  @override
+  String toString() => message;
+}
+
+String apiErrorMessage(Object error) {
+  if (error is ApiException) return error.message;
+  if (error is TimeoutException) return '请求超时，操作结果待确认，请查看当前状态';
+  if (error is SocketException) return '无法连接鱼脑，请检查服务状态';
+  return '操作未获确认，请查看状态后重试';
+}
+
 class ApiClient {
   final String base;
   final HttpClient _http = HttpClient();
@@ -70,12 +85,26 @@ class ApiClient {
           },
         );
     if (resp.statusCode == 401) _token = null;
-    if (resp.statusCode >= 400) {
-      throw Exception('HTTP ${resp.statusCode}: $text');
+    dynamic result;
+    try {
+      result = text.isEmpty ? null : jsonDecode(text);
+    } on FormatException {
+      throw ApiException(
+        'invalid_response',
+        '服务响应格式无效（HTTP ${resp.statusCode}）',
+      );
     }
-    final result = text.isEmpty ? null : jsonDecode(text);
     if (result is Map && (result['ok'] == false || result['error'] != null)) {
-      throw Exception(result['error'] ?? '操作未获确认');
+      throw ApiException(
+        '${result['code'] ?? 'rejected'}',
+        '${result['error'] ?? '操作未获确认'}',
+      );
+    }
+    if (resp.statusCode >= 400) {
+      throw ApiException(
+        'http_${resp.statusCode}',
+        '服务请求失败（HTTP ${resp.statusCode}）',
+      );
     }
     return result;
   }

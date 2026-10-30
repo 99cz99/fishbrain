@@ -28,7 +28,9 @@ class _StatusPageState extends State<StatusPage> {
   final TextEditingController _cmd = TextEditingController();
   final TermuxRunner _termux = TermuxRunner();
   bool _busy = false;
-  bool _onlyErrors = false;
+  bool _starting = false;
+  int _refreshGeneration = 0;
+  bool _onlyIssues = false;
 
   @override
   void initState() {
@@ -47,7 +49,8 @@ class _StatusPageState extends State<StatusPage> {
   bool _refreshing = false;
 
   Future<void> _refresh() async {
-    if (_refreshing || !mounted) return;
+    if (_refreshing || _starting || !mounted) return;
+    final generation = _refreshGeneration;
     _refreshing = true;
     try {
       try {
@@ -61,7 +64,7 @@ class _StatusPageState extends State<StatusPage> {
         try {
           life = LifeState.fromJson(await widget.api.lifeState());
         } catch (_) {}
-        if (!mounted) return;
+        if (!mounted || generation != _refreshGeneration) return;
         setState(() {
           _status = s;
           _logs = logs;
@@ -70,7 +73,7 @@ class _StatusPageState extends State<StatusPage> {
           _connected = true;
         });
       } catch (_) {
-        if (!mounted) return;
+        if (!mounted || generation != _refreshGeneration) return;
         setState(() => _connected = false);
       }
     } finally {
@@ -112,9 +115,7 @@ class _StatusPageState extends State<StatusPage> {
   }
 
   Future<void> _exportLogs() async {
-    final visible = _logs
-        .where((l) => !_onlyErrors || l.level == 'error')
-        .toList();
+    final visible = _logs.where((l) => !_onlyIssues || l.isIssue).toList();
     final text = visible
         .map((l) => '${l.ts} [${l.level}/${l.category}] ${l.message}')
         .join('\n');
@@ -122,59 +123,101 @@ class _StatusPageState extends State<StatusPage> {
     _snack('已复制 ${visible.length} 条日志到剪贴板');
   }
 
-  Future<void> _startFish() async {
-    setState(() => _busy = true);
-    final ok = await _termux.run(
-      'sh /data/data/com.termux/files/home/dfy/run-fish.sh',
-      workdir: '/data/data/com.termux/files/home/dfy',
-    );
-    await Future.delayed(const Duration(seconds: 3));
-    try {
-      await widget.api.status();
-      _snack(ok ? '鱼脑已启动' : '鱼脑已在线，启动指令未确认');
-    } catch (_) {
-      _snack('鱼脑启动尚未确认，请检查 Termux 权限和日志');
+  Future<void> _startFish() => _launchFish();
+
+  Future<bool> _waitForFish() async {
+    final elapsed = Stopwatch()..start();
+    for (var attempt = 0; attempt < 30 && mounted; attempt++) {
+      if (elapsed.elapsed >= const Duration(seconds: 60)) break;
+      try {
+        final status = await widget.api.status();
+        if (!mounted) return false;
+        setState(() {
+          _status = status;
+          _connected = true;
+        });
+        return true;
+      } catch (_) {
+        if (!mounted) return false;
+      }
+      await Future.delayed(const Duration(seconds: 2));
     }
-    _refresh();
-    if (mounted) setState(() => _busy = false);
+    return false;
+  }
+
+  Future<void> _launchFish({bool restarting = false}) async {
+    if (!mounted) return;
+    _refreshGeneration++;
+    setState(() {
+      _busy = true;
+      _starting = true;
+    });
+    try {
+      final env = await _termux.preflight();
+      if (!mounted) return;
+      if (env?['termuxInstalled'] != true) {
+        _snack('无法连接 Termux，请到部署页检查环境');
+        return;
+      }
+      if (env?['runCommandGranted'] != true) {
+        _snack('缺少 Termux 命令权限，请到部署页授权');
+        return;
+      }
+      final sent = await _termux.run(
+        'sh /data/data/com.termux/files/home/dfy/run-fish.sh',
+        workdir: '/data/data/com.termux/files/home/dfy',
+      );
+      if (!mounted) return;
+      final online = await _waitForFish();
+      if (!mounted) return;
+      if (online) {
+        _snack(restarting ? '鱼脑已重启（QQ 保持在线）' : '鱼脑已启动');
+      } else {
+        _snack(
+          sent
+              ? '启动指令已发出，服务仍未就绪，请到部署页检查环境及启动日志'
+              : '启动指令未能发出，请到部署页检查 Termux 权限和后台限制',
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _starting = false;
+        });
+        _refresh();
+      }
+    }
   }
 
   Future<void> _stopFish() async {
+    _refreshGeneration++;
     setState(() => _busy = true);
     final stopped = await _termux.runAndWait(
       "pkill -f '[r]un-fish.sh'; pkill -f '[s]erver.py'; rm -f /data/data/com.termux/files/home/dfy/.fish.pid",
       timeoutMs: 10000,
     );
+    if (!mounted) return;
     _snack(stopped?.ok == true ? '鱼脑停止命令已完成（QQ 保持在线）' : '停止未获确认');
     _refresh();
     if (mounted) setState(() => _busy = false);
   }
 
   Future<void> _restartFish() async {
+    _refreshGeneration++;
     setState(() => _busy = true);
     final stopped = await _termux.runAndWait(
       "pkill -f '[r]un-fish.sh'; pkill -f '[s]erver.py'; rm -f /data/data/com.termux/files/home/dfy/.fish.pid",
       timeoutMs: 10000,
     );
+    if (!mounted) return;
     if (stopped?.ok != true) {
       _snack('停止未获确认，已取消重启');
       if (mounted) setState(() => _busy = false);
       return;
     }
-    await Future.delayed(const Duration(seconds: 1));
-    await _termux.run(
-      'sh /data/data/com.termux/files/home/dfy/run-fish.sh',
-      workdir: '/data/data/com.termux/files/home/dfy',
-    );
-    await Future.delayed(const Duration(seconds: 3));
-    try {
-      await widget.api.status();
-      _snack('鱼脑已重启（QQ 保持在线）');
-    } catch (_) {
-      _snack('启动尚未确认，请检查日志');
-    }
-    _refresh();
-    if (mounted) setState(() => _busy = false);
+    if (!mounted) return;
+    await _launchFish(restarting: true);
   }
 
   String _stateLabel(String s) => switch (s) {
@@ -196,27 +239,33 @@ class _StatusPageState extends State<StatusPage> {
     return h > 0 ? '${h}h ${m}m' : '${m}m ${s}s';
   }
 
-  IconData _iconFor(String c) => switch (c) {
-    'chat' => Icons.chat_bubble_outline,
-    'action' => Icons.touch_app_outlined,
-    'approval' => Icons.fact_check_outlined,
-    'error' => Icons.error_outline,
-    _ => Icons.circle,
-  };
+  IconData _iconFor(LogEntry entry) {
+    if (entry.level == 'error') return Icons.error_outline;
+    if (entry.level == 'warning') return Icons.warning_amber_rounded;
+    return switch (entry.category) {
+      'chat' => Icons.chat_bubble_outline,
+      'action' => Icons.touch_app_outlined,
+      'approval' => Icons.fact_check_outlined,
+      'error' => Icons.error_outline,
+      _ => Icons.circle,
+    };
+  }
 
-  Color _iconColorFor(String c) => switch (c) {
-    'error' => AppColors.danger,
-    'approval' => AppColors.warning,
-    'action' => AppColors.primaryLight,
-    _ => AppColors.textSecondaryLight,
-  };
+  Color _iconColorFor(LogEntry entry) {
+    if (entry.level == 'error') return AppColors.danger;
+    if (entry.level == 'warning') return AppColors.warning;
+    return switch (entry.category) {
+      'error' => AppColors.danger,
+      'approval' => AppColors.warning,
+      'action' => AppColors.primaryLight,
+      _ => AppColors.textSecondaryLight,
+    };
+  }
 
   @override
   Widget build(BuildContext context) {
     final s = _status;
-    final visible = _logs
-        .where((l) => !_onlyErrors || l.level == 'error')
-        .toList();
+    final visible = _logs.where((l) => !_onlyIssues || l.isIssue).toList();
     return Scaffold(
       appBar: AppBar(title: const Text('状态')),
       body: RefreshIndicator(
@@ -356,7 +405,7 @@ class _StatusPageState extends State<StatusPage> {
                   child: FilledButton.icon(
                     onPressed: _busy ? null : _startFish,
                     icon: const Icon(Icons.play_arrow),
-                    label: const Text('启动'),
+                    label: Text(_starting ? '启动中…' : '启动'),
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -416,9 +465,9 @@ class _StatusPageState extends State<StatusPage> {
                 Text('活动', style: Theme.of(context).textTheme.titleMedium),
                 const Spacer(),
                 FilterChip(
-                  label: const Text('只看报错'),
-                  selected: _onlyErrors,
-                  onSelected: (v) => setState(() => _onlyErrors = v),
+                  label: const Text('只看异常'),
+                  selected: _onlyIssues,
+                  onSelected: (v) => setState(() => _onlyIssues = v),
                 ),
                 const SizedBox(width: 6),
                 IconButton(
@@ -451,11 +500,7 @@ class _StatusPageState extends State<StatusPage> {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            _iconFor(l.category),
-            size: 20,
-            color: _iconColorFor(l.category),
-          ),
+          Icon(_iconFor(l), size: 20, color: _iconColorFor(l)),
           const SizedBox(width: 10),
           Expanded(
             child: Column(

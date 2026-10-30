@@ -3,6 +3,7 @@ from pathlib import Path
 import argparse
 import json
 import os
+import time
 import urllib.request
 
 import deploy_memory_update as deploy
@@ -36,6 +37,19 @@ def install(stage):
     result = request('/qq/apply_onebot','POST')
     if not result.get('ok'):
         raise RuntimeError('Runtime updated; OneBot migration failed, original config retained')
+    operation = result.get('operation')
+    if operation:
+        for _ in range(100):
+            current = request('/qq/status').get('operation') or {}
+            if current.get('id') != operation.get('id'):
+                raise RuntimeError('OneBot operation superseded; inspect status and saved backup')
+            if current.get('status') == 'completed':
+                break
+            if current.get('status') not in ('queued','running','waiting'):
+                raise RuntimeError('OneBot configuration result not confirmed; inspect operation status')
+            time.sleep(2)
+        else:
+            raise RuntimeError('Timed out waiting for OneBot configuration confirmation')
     from qq_config import delivery_config
     expected = delivery_config(before,json.loads((ROOT/'onebot11.json').read_text()))
     actual = json.loads(config_path.read_text())

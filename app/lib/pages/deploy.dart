@@ -4,6 +4,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../models.dart';
 import '../termux.dart';
 import '../theme.dart';
 import '../widgets.dart';
@@ -25,7 +26,7 @@ class _DeployPageState extends State<DeployPage> {
   bool _qqQr = false;
   bool _qqOnline = false;
   bool _qqStale = false;
-  String _loginReason = 'unknown';
+  QQControlStatus _qqControl = QQControlStatus({});
   bool _qqAutoCircuit = false;
   bool _heyboxEnabled = false;
   bool _busy = false;
@@ -55,7 +56,7 @@ class _DeployPageState extends State<DeployPage> {
       var qqQr = false;
       var qqOnline = false;
       var qqStale = false;
-      var loginReason = 'unknown';
+      var control = QQControlStatus({});
       var qqAutoCircuit = false;
       var heyboxEnabled = false;
       try {
@@ -68,7 +69,7 @@ class _DeployPageState extends State<DeployPage> {
         qqQr = q['qr'] == true;
         qqOnline = q['online'] == true;
         qqStale = q['stale'] == true;
-        loginReason = (q['login_reason'] as String?) ?? 'unknown';
+        control = QQControlStatus(q);
         qqAutoCircuit = q['auto_circuit'] == true;
       } catch (_) {}
       try {
@@ -82,7 +83,7 @@ class _DeployPageState extends State<DeployPage> {
         _qqQr = qqQr;
         _qqOnline = qqOnline;
         _qqStale = qqStale;
-        _loginReason = loginReason;
+        _qqControl = control;
         _qqAutoCircuit = qqAutoCircuit;
         _heyboxEnabled = heyboxEnabled;
       });
@@ -112,9 +113,14 @@ class _DeployPageState extends State<DeployPage> {
     setState(() => _busy = true);
     try {
       final r = await widget.api.qqStart();
-      _snack(r['already'] == true ? 'QQ 已经在跑了' : '已发起启动 QQ，稍等十几秒');
-    } catch (_) {
-      _snack('启动 QQ 失败（鱼脑在线吗？）');
+      if (mounted) {
+        setState(
+          () => _qqControl = QQControlStatus({..._qqControl.data, ...r}),
+        );
+      }
+      _snack('启动请求已提交，等待 QQ 状态确认');
+    } catch (error) {
+      _snack(apiErrorMessage(error));
     }
     await Future.delayed(const Duration(seconds: 3));
     _refresh();
@@ -124,20 +130,27 @@ class _DeployPageState extends State<DeployPage> {
   Future<void> _stopQq() async {
     setState(() => _busy = true);
     try {
-      await widget.api.qqStop();
-      _snack('已停止 QQ');
-    } catch (_) {
-      _snack('停止 QQ 失败');
+      final r = await widget.api.qqStop();
+      if (mounted) {
+        setState(
+          () => _qqControl = QQControlStatus({..._qqControl.data, ...r}),
+        );
+      }
+      _snack('停止请求已提交，等待进程退出');
+    } catch (error) {
+      _snack(apiErrorMessage(error));
     }
     _refresh();
     if (mounted) setState(() => _busy = false);
   }
 
   String _qqStatusLabel() {
+    if (_qqControl.busy) return '操作进行中';
     if (!_qqRunning) return '未运行';
     if (_qqOnline) return '在线';
+    if (_qqControl.authenticated) return '已登录，待连接';
     if (_qqQr) return '待扫码';
-    if (_qqStale) return '掉线（自愈中）';
+    if (_qqStale) return '登录状态待确认';
     return '运行中';
   }
 
@@ -145,26 +158,6 @@ class _DeployPageState extends State<DeployPage> {
     if (_qqOnline) return AppColors.success;
     if (_qqQr || _qqStale) return AppColors.warning;
     return AppColors.textSecondaryLight;
-  }
-
-  String _reasonLabel(String reason) {
-    if (reason.startsWith('login_error_')) {
-      return '登录报错(码${reason.substring('login_error_'.length)})';
-    }
-    switch (reason) {
-      case 'nt_timeout':
-        return 'QQ 内核超时';
-      case 'offline':
-        return '账号离线';
-      case 'waiting_scan':
-        return '待扫码';
-      case 'login_service_dropped':
-        return '登录服务断连';
-      case 'risk':
-        return '风控';
-      default:
-        return '未知';
-    }
   }
 
   @override
@@ -204,13 +197,10 @@ class _DeployPageState extends State<DeployPage> {
                   padding: const EdgeInsets.only(top: 12),
                   child: _hint('有待扫码登录的二维码，点「扫码登录」', color: AppColors.warning),
                 ),
-              if (_qqRunning && _qqStale)
+              if (_qqControl.modern || (_qqRunning && _qqStale))
                 Padding(
                   padding: const EdgeInsets.only(top: 12),
-                  child: _hint(
-                    'QQ 掉线（${_reasonLabel(_loginReason)}），鱼脑会自动重启重连',
-                    color: AppColors.warning,
-                  ),
+                  child: _hint(_qqControl.message, color: AppColors.warning),
                 ),
               if (_qqAutoCircuit)
                 Padding(
@@ -236,13 +226,21 @@ class _DeployPageState extends State<DeployPage> {
                 const SizedBox(height: 10),
               ],
               FilledButton.tonalIcon(
-                onPressed: (_busy || !_fishUp) ? null : _startQq,
+                onPressed: (_busy || !_fishUp || _qqControl.busy)
+                    ? null
+                    : _startQq,
                 icon: const Icon(Icons.chat),
                 label: const Text('启动 QQ'),
               ),
               const SizedBox(height: 10),
               OutlinedButton.icon(
-                onPressed: (_busy || !_qqRunning) ? null : _stopQq,
+                onPressed:
+                    (_busy ||
+                        !_fishUp ||
+                        _qqControl.stopping ||
+                        (!_qqRunning && !_qqControl.busy))
+                    ? null
+                    : _stopQq,
                 icon: const Icon(Icons.stop),
                 label: const Text('停止 QQ'),
               ),

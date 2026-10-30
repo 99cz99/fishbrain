@@ -24,6 +24,7 @@ from qq_bot import STICKER_DIR
 from memory_policy import action_outcome
 from delivery import SendUnconfirmedError
 from qq_config import delivery_config
+from qq_control import QQController, QQBackend, ProcessManager, WebUIClient
 
 # NapCat 二维码文件路径（proot-Debian 容器内，映射到 Termux 文件系统）
 DEFAULT_QRCODE_PATH = "/data/data/com.termux/files/usr/var/lib/proot-distro/containers/debian/rootfs/opt/QQ/resources/app/app_launcher/napcat/cache/qrcode.png"
@@ -47,10 +48,7 @@ def _qq_start_cmd(uin=None):
             + ql +
             ">> /root/napcat/qq.log 2>&1; "
             "echo QQ_EXIT_CODE=$? >> /root/napcat/qq.log")
-# 先 SIGTERM 优雅退出（让 QQ 把 keystore 写盘，登录态才持久），再 SIGKILL 兜底。
-# 用 [q]/[X]/[x] 括号正则避免 pkill 匹配到自身的 bash -c 命令。
-QQ_STOP_CMD = ("pkill -TERM -f '[q]q --no-sandbox'; sleep 15; "
-               "pkill -9 -f '[q]q --no-sandbox'; pkill -9 -f '[X]vfb'; pkill -9 -f '[x]vfb-run'")
+# 停止交给 QQController：核对 PID/启动时间，先退出原生进程，再清理专属会话组。
 # 两次自动拉起 QQ 的最小间隔（秒）：防频繁重登被 QQ 风控
 QQ_RESTART_COOLDOWN = 120
 # 鱼脑刚启动的宽限期（秒）：此窗口内 qq_keep_alive 不拉起/判断，给 QQ 的 WS 重连留时间
@@ -83,21 +81,8 @@ def _qq_env():
 
 
 def _qq_process_alive():
-    """linuxqq/NapCat 进程是否活着（含「正在扫码登录」阶段，此时 8081 还没起）。"""
-    try:
-        for pid in os.listdir("/proc"):
-            if not pid.isdigit():
-                continue
-            try:
-                with open(f"/proc/{pid}/cmdline", "rb") as f:
-                    cmd = f.read().replace(b"\x00", b" ").decode("utf-8", "ignore")
-            except Exception:
-                continue
-            if "qq --no-sandbox" in cmd:
-                return True
-    except Exception:
-        pass
-    return False
+    scan = ProcessManager().scan()
+    return any(row['role'] == 'main' for row in scan['rows'])
 
 
 def _qq_qr_fresh(path):
@@ -201,6 +186,8 @@ class Fish:
         self._self_healing = False          # 自动快捷登录是否在途
         self._self_healing_ts = 0.0
         self._last_guid_check = 0.0         # 上次设备指纹捕获/比对时间戳（节流）
+        self._controller = None
+        self._qq_controller().start()
         self.deployer = Deployer(self.store)
         self.autonomy = Autonomy(self.store, self.brain,
                                  request_approval=self.request_approval,
@@ -319,10 +306,11 @@ class Fish:
         return self.heybox.status() if self.heybox else {"enabled": False}
 
     def set_qq_quick_login_uin(self, uin):
-        """app 保存快捷登录 QQ 号（掉线自愈用）。空串/非数字 = 停用自愈。"""
-        val = str(uin or "").strip()
-        self.store.set_setting("qq_quick_login_uin", val)
-        return {"ok": True, "uin_configured": val.isdigit()}
+        value = str(uin or '').strip()
+        if value and not value.isdigit():
+            return {'ok': False, 'code': 'invalid_account', 'error': 'QQ 账号应为数字'}
+        self._qq_controller().set_target(value)
+        return {'ok': True, 'uin_configured': bool(value)}
 
     def command(self, cmd, args):
         # 阶段 0 只记录；阶段 3 由 autonomy 真正执行
@@ -346,44 +334,19 @@ class Fish:
         return "已记录指令: " + self.current_task
 
     # ---- QQ 生命周期（NapCat/linuxqq 跑在 proot-Debian）----
+    def _qq_controller(self):
+        if getattr(self, '_controller', None) is None:
+            root = os.path.dirname(os.path.abspath(__file__))
+            backend = QQBackend(self, root, PROOT_DISTRO, _qq_start_cmd, _qq_env,
+                                NAPCAT_CONFIG_DIR, self.qq_cfg.get('qrcode_path', DEFAULT_QRCODE_PATH))
+            self._controller = QQController(self.store, backend)
+        return self._controller
+
     def qq_start(self, reset_circuit=False, uin=None):
-        self._qq_auto = True  # 显式/自动启动后，恢复自动保活
-        if reset_circuit:  # 仅显式/人工启动才清零熔断（自动拉起走 qq_start 不清，否则计数永远累加不到阈值）
-            self._qq_auto_fail_count = 0
-            self._qq_auto_circuit_until = 0.0
-            self._qq_online_since = 0.0
-        self._last_qq_online_ts = time.time()  # 启动 = 新的宽限基准，给 boot 300s 余量
-        if _qq_process_alive():
-            self.log("info", "status", "QQ 已在运行，跳过启动")
-            return {"ok": True, "already": True}
-        try:
-            err_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "qq_start_err.log")
-            with open(err_path, "w") as f:
-                subprocess.Popen(
-                    [PROOT_DISTRO, "login", "debian", "--hostname", "qq-bot", "--", "bash", "-c", _qq_start_cmd(uin)],
-                    env=_qq_env(), start_new_session=True,
-                    stdout=f, stderr=subprocess.STDOUT,
-                )
-            tag = f"（快速登录 {uin}）" if uin else ""
-            self.log("info", "status", f"已发起 QQ 启动（NapCat）{tag}")
-            return {"ok": True, "already": False}
-        except Exception as e:
-            self.log("error", "error", f"QQ 启动失败: {e}")
-            return {"ok": False, "error": str(e)}
+        return self._qq_controller().request('start', target=uin, manual=reset_circuit)
 
     def qq_stop(self):
-        self._qq_auto = False  # 用户显式停止，别再自动拉起
-        try:
-            subprocess.run(
-                [PROOT_DISTRO, "login", "debian", "--", "bash", "-c", QQ_STOP_CMD],
-                env=_qq_env(), timeout=20,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            self.log("info", "status", "已停止 QQ")
-            return {"ok": True}
-        except Exception as e:
-            self.log("error", "error", f"QQ 停止失败: {e}")
-            return {"ok": False, "error": str(e)}
+        return self._qq_controller().request('stop')
 
     def _qq_really_online(self):
         """QQ 是否真实在线：账号已登录（self_id 存在）且 OneBot WS 建立。
@@ -396,48 +359,25 @@ class Fish:
         return _qq_process_alive() and not self._qq_really_online() and not _qq_qr_fresh(qr_path)
 
     def _qq_self_heal_uin(self):
-        """自愈用的快捷登录 QQ 号：读 settings（_on_meta 登录时自动填），纯数字才返回，否则 None。"""
-        raw = self.store.get_setting_raw("qq_quick_login_uin")
-        if raw is None:
-            return None
-        s = str(raw).strip()
-        return s if s.isdigit() else None
+        return self._qq_controller().target()
 
     def qq_status(self):
-        qr_path = self.qq_cfg.get("qrcode_path", DEFAULT_QRCODE_PATH)
-        self_id = None
-        if getattr(self, "qq_bot", None):
-            self_id = self.qq_bot.self_id
-        qr_age = -1
-        try:
-            if os.path.exists(qr_path):
-                qr_age = int(time.time() - os.path.getmtime(qr_path))
-        except Exception:
-            qr_age = -1
-        process_alive = _qq_process_alive()
-        online = self._qq_really_online()
-        qr_fresh = _qq_qr_fresh(qr_path)
-        # 快捷登录在途标志：上线即清，另设 300s 兜底超时（-q 重启+登录可能较久）
-        if self._self_healing and (online or (time.time() - self._self_healing_ts) > 300):
-            self._self_healing = False
-        raw_guid = self.store.get_setting_raw("qq_device_guid")
-        device_guid = str(raw_guid).strip() if raw_guid else ""
-        return {
-            "running": process_alive,      # 进程活着（含扫码阶段）
-            "qr": qr_fresh,                # 有新鲜二维码 = 待扫码
-            "qr_age": qr_age,              # 二维码生成至今秒数（-1=还没有码）
-            "online": online,              # 账号已登录且 WS 真实存活（非 TCP 探活）
-            "stale": process_alive and not online and not qr_fresh,  # 掉线残留
-            "login_reason": "unknown" if online else _parse_qq_log_state(),  # 日志是历史线索，在线时不作当前故障
-            "self_id": self_id,            # 登录后的 QQ 号
-            "login_uin": self._find_login_uin(),  # 从 onebot11_<uin>.json 文件名探测到的 QQ 号
-            "quick_login_configured": bool(self._qq_self_heal_uin()),  # 是否配了 -q 快捷登录号（只布尔不吐号）
-            "auto_circuit": bool(self._qq_auto_circuit_until and time.time() < self._qq_auto_circuit_until),
-            "auto_fail_count": self._qq_auto_fail_count,
-            "self_healing": self._self_healing,   # 自动快捷登录是否在途
-            "transport": self.qq_bot.diagnostics() if getattr(self, "qq_bot", None) else None,
-            "device_guid": device_guid,           # 缓存的最新设备 GUID（Part B 写入）
-        }
+        control = self._qq_controller()
+        state = control.snapshot()
+        op = state.get('operation') or {}
+        bot = getattr(self, 'qq_bot', None)
+        account_state = state.get('account_state', 'unknown')
+        reason = ('waiting_scan' if state.get('qr') else
+                  'offline' if account_state == 'offline' else 'unknown')
+        return {**state, 'running': bool(state.get('running') or state.get('launching')),
+                'online': bool(state.get('online')), 'qr': bool(state.get('qr')),
+                'qr_age': state.get('qr_age', -1),
+                'stale': bool(state.get('running') and not state.get('account_ready')
+                              and not state.get('login_accepted') and not state.get('qr')),
+                'login_reason': reason, 'login_uin': state.get('account') if state.get('account_ready') else None,
+                'self_id': bot.self_id if bot else None,
+                'quick_login_configured': bool(control.target()), 'device_guid': None,
+                'last_error': op.get('error', ''), 'control_version': 2}
 
     def qq_api(self, action, params):
         """通用转发 OneBot API 调用（给 app / autonomy 用）。"""
@@ -453,101 +393,11 @@ class Fish:
             return {"ok": False, "error": str(e)}
 
     def qq_refresh_qr(self):
-        """强制换新二维码：重启 QQ（自动刷新失效时的兜底）。"""
-        self.log("info", "status", "重新出码：重启 QQ")
-        self.qq_stop()
-        time.sleep(3)
-        return self.qq_start(reset_circuit=True)
+        return self._qq_controller().request('refresh_qr')
 
     def qq_keep_alive(self):
-        """自保本能：QQ 进程掉了就自动拉起（带风控护栏 + 扫码停手）。
-        进程活着但已掉线（账号/WS 掉线、无新鲜码）时：配了快捷登录号且属软掉线则 -q 自愈，否则只记日志。
-        由 autonomy 周期性调用；用户显式停 QQ 后不再自动拉起。"""
-        if not self._qq_auto or 'qq' not in self.store.get_settings().get('enabled_platforms', []):
-            return
-        if time.time() - self.started < QQ_KEEPALIVE_GRACE_SECONDS:
-            return  # 鱼脑刚启动，先别拉起/判断，给 QQ 的 WS 重连留时间
-        now = time.time()
-        # 记录上次真实在线时刻（掉线宽限期的基准）；持续稳定在线才清零熔断计数
-        if self._qq_really_online():
-            self._last_qq_online_ts = now
-            if self._qq_online_since == 0.0:
-                self._qq_online_since = now
-            elif now - self._qq_online_since >= QQ_AUTO_STABLE_SECONDS:
-                self._qq_auto_fail_count = 0
-                self._qq_auto_circuit_until = 0.0
-            # 每 600s 捕获/比对一次设备指纹（观测 + 纠偏，后台线程跑，不阻塞心跳）
-            if now - self._last_guid_check >= 600:
-                self._last_guid_check = now
-                threading.Thread(target=self._refresh_device_fingerprint, daemon=True).start()
-        else:
-            self._qq_online_since = 0.0
-        qr_path = self.qq_cfg.get("qrcode_path", DEFAULT_QRCODE_PATH)
-        # 分支 1：进程完全没了 → 自动拉起（有快捷登录号则 -q 免扫码，否则等人扫码）
-        if not _qq_process_alive():
-            if self._qq_auto_circuit_until:
-                if now < self._qq_auto_circuit_until:
-                    return  # 熔断中，暂停自动拉起
-                # 熔断期已过，重置计数重新尝试
-                self._qq_auto_fail_count = 0
-                self._qq_auto_circuit_until = 0.0
-            if now - self._last_qq_auto_start < QQ_RESTART_COOLDOWN:
-                return
-            uin = self._qq_self_heal_uin()
-            if _qq_qr_fresh(qr_path) and not uin:
-                # 进程已死但留下新鲜二维码：只有没快捷登录号时才等人扫码（有号则 -q 免扫码重启）
-                if not self._qq_scan_logged:
-                    self._qq_scan_logged = True
-                    self.log("info", "qq", "QQ 需要重新扫码登录，暂不自动重登（去 app 扫码）")
-                return
-            self._qq_scan_logged = False
-            if not os.path.exists(PROOT_DISTRO):
-                return  # 开发机没有 proot-distro，不折腾
-            self._last_qq_auto_start = now
-            self._qq_auto_fail_count += 1
-            if self._qq_auto_fail_count >= QQ_AUTO_MAX_FAIL:
-                self._qq_auto_circuit_until = now + QQ_AUTO_CIRCUIT_SECONDS
-                self.log("warn", "qq",
-                         f"QQ 连续 {self._qq_auto_fail_count} 次自动拉起仍无法稳定在线，熔断 {QQ_AUTO_CIRCUIT_SECONDS // 60} 分钟（可手动启动重置）")
-                return
-            tag = "（-q 快速登录）" if uin else ""
-            self.log("info", "qq", f"检测到 QQ 离线，自动拉起…{tag}")
-            return self.qq_start(uin=uin)
-        # 分支 2：进程活着但掉线（WS 不通 + 无新鲜码）。
-        # 配了快捷登录号且属「软掉线」时，用 -q 快速登录自愈一次；否则只按节流记日志，交回 qq_bot 的 5s 重连。
-        if not self._qq_stale(qr_path):
-            return
-        if now - self._last_qq_online_ts < QQ_STALE_GRACE_SECONDS:
-            return  # 可能还在正常启动/扫码/NapCat 自愈窗口，先别动作
-        if self._qq_auto_circuit_until:
-            if now < self._qq_auto_circuit_until:
-                return  # 熔断中，暂停自动恢复
-            self._qq_auto_fail_count = 0
-            self._qq_auto_circuit_until = 0.0
-        if now - self._last_qq_stale_restart_ts < QQ_STALE_RESTART_COOLDOWN:
-            return  # 单次节流，避免频繁重登
-        reason = _parse_qq_log_state()
-        uin = self._qq_self_heal_uin()
-        if uin and reason in ("offline", "login_service_dropped", "nt_timeout"):
-            # 仅当 WebUI 明确显示「在线/重连中」才不动；真离线 或 WebUI 不可达 都尝试快登（后者回退 -q）
-            st = self._webui_check_login()
-            if st is not None and (st.get("loginPhase") == "reconnecting" or (st.get("isLogin") and not st.get("isOffline"))):
-                self._last_qq_stale_restart_ts = now
-                self.log("info", "qq", "QQ 账号未真离线（WS 掉或重连中），等待自动重连")
-                return
-            # 真离线（或 WebUI 不可达）：先免重启 WebUI 快登，失败回退 -q 重启
-            self._last_qq_stale_restart_ts = now
-            self._qq_auto_fail_count += 1
-            if self._qq_auto_fail_count >= QQ_AUTO_MAX_FAIL:
-                self._qq_auto_circuit_until = now + QQ_AUTO_CIRCUIT_SECONDS
-                self.log("warn", "qq",
-                         f"QQ 连续 {self._qq_auto_fail_count} 次掉线自愈仍未稳定在线，熔断 {QQ_AUTO_CIRCUIT_SECONDS // 60} 分钟（可手动启动重置）")
-                return
-            self.log("info", "qq", f"QQ 掉线自愈：快捷登录（reason={reason}）")
-            threading.Thread(target=self._do_quick_login_heal, args=(uin,), daemon=True).start()
-            return
-        self._last_qq_stale_restart_ts = now
-        self.log("warn", "qq", "QQ 进程活着但 WS 掉线（NapCat 疑似卡住），不重启以保留登录态，等待自动重连")
+        # Independent controller worker owns polling and recovery; never block the LLM loop.
+        self._qq_controller().start()
 
     def _find_login_uin(self):
         """扫码登录后 NapCat 会生成 onebot11_<uin>.json（首次为空 WS），从文件名拿 QQ 号。
@@ -569,53 +419,10 @@ class Fish:
         return None
 
     def apply_onebot(self):
-        """扫码登录后：把 ~/dfy/onebot11.json 模板写成 NapCat 的 onebot11_<uin>.json，
-        并重启 QQ 让 8081 生效（NapCat 首次生成的配置 websocketServers 是空的）。"""
-        bot = getattr(self, "qq_bot", None)
-        self_id = (bot.self_id if bot else None) or self._find_login_uin()
-        if not self_id:
-            return {"ok": False, "error": "QQ 还没登录（self_id 未知）"}
-        here = os.path.dirname(os.path.abspath(__file__))
-        template = os.path.join(here, "onebot11.json")
-        if not os.path.exists(template):
-            return {"ok": False, "error": "onebot11.json 模板不存在"}
-        target = os.path.join(NAPCAT_CONFIG_DIR, f"onebot11_{self_id}.json")
-        try:
-            with open(template, "r", encoding="utf-8") as f:
-                defaults = json.load(f)
-            existing = {}
-            if os.path.exists(target):
-                with open(target, encoding='utf-8') as f:
-                    existing = json.load(f)
-            updated = delivery_config(existing,defaults)
-            if updated == existing:
-                return {"ok": True, "target": target, "already": True}
-            temporary = target+'.incoming'
-            with open(temporary, 'w', encoding='utf-8') as f:
-                json.dump(updated,f,ensure_ascii=False,indent=2)
-            os.replace(temporary,target)
-        except Exception as e:
-            return {"ok": False, "error": f"写 OneBot 配置失败: {e}"}
-        self.log("info", "qq", f"已写 OneBot 配置 onebot11_{self_id}.json，重启 QQ 让 8081 生效")
-        threading.Thread(target=self._restart_qq, kwargs={'uin': str(self_id)}, daemon=True).start()
-        return {"ok": True, "target": target, "restarting": True}
-
-    def _onebot_has_ws(self, path):
-        """目标 onebot11 配置里是否已经配了 8081 的 websocketServer（已配就跳过重写+重启）。"""
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.loads(f.read())
-            servers = data.get("network", {}).get("websocketServers", [])
-            return any(isinstance(s, dict) and s.get("port") == QQ_WS_PORT for s in servers)
-        except Exception:
-            return False
+        return self._qq_controller().request('configure')
 
     def _restart_qq(self, uin=None):
-        """后台优雅重启 QQ（stop→start），给 keystore 落盘留窗口；uin 非空则走 -q 快速登录。"""
-        time.sleep(1)
-        self.qq_stop()
-        time.sleep(2)
-        self.qq_start(uin=uin)
+        return self._qq_controller().request('restart', target=uin)
 
     # ---- NapCat WebUI（127.0.0.1:6099）：快捷登录 + 设备指纹 ----
     def _webui_token(self):
@@ -642,127 +449,39 @@ class Fish:
         return "napcat"
 
     def _webui_request(self, path, body=None, cred=None):
-        """低层：POST/GET 到 NapCat WebUI，返回解析后的 JSON dict（失败/超时返回 None）。"""
-        url = NAPCAT_WEBUI_URL + path
-        try:
-            req = urllib.request.Request(url, method="POST" if body is not None else "GET")
-            req.add_header("Content-Type", "application/json")
-            if cred:
-                req.add_header("Authorization", "Bearer " + cred)
-            data = json.dumps(body).encode("utf-8") if body is not None else None
-            with urllib.request.urlopen(req, data=data, timeout=6) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except Exception:
-            return None
-
-    def _webui_cred(self):
-        """WebUI Bearer Credential（sha256(token+'.napcat') 登录），缓存 ~55 分钟。"""
-        now = time.time()
-        if self._webui_cred_val and (now - self._webui_cred_ts) < 3300:
-            return self._webui_cred_val
-        token = self._webui_token()
-        h = hashlib.sha256((token + ".napcat").encode("utf-8")).hexdigest()
-        r = self._webui_request("/api/auth/login", {"hash": h}, cred=None)
-        if not r or r.get("code") != 0:
-            self._webui_cred_val = None
-            return None
-        self._webui_cred_val = ((r.get("data") or {}).get("Credential")) or None
-        self._webui_cred_ts = now
-        return self._webui_cred_val
+        result = self._webui_client().raw(path, body, cred)
+        return {'code': 0, 'data': result.get('data')} if result['ok'] else None
 
     def _webui_call(self, path, body=None):
-        """带鉴权调用 WebUI；拿不到 Credential（WebUI 未起/不可达）返回 None。"""
-        cred = self._webui_cred()
-        if not cred:
-            return None
-        return self._webui_request(path, body, cred=cred)
+        result = self._webui_client().call(path, body)
+        return {'code': 0, 'data': result.get('data')} if result['ok'] else None
 
     def _webui_check_login(self):
-        """CheckLoginStatus → data dict（isLogin/isOffline/loginPhase/...）；失败/不可达返回 None。"""
-        r = self._webui_call("/api/QQLogin/CheckLoginStatus", {})
-        return (r or {}).get("data") if (r and r.get("code") == 0) else None
+        result = self._webui_client().call('/api/QQLogin/CheckLoginStatus', {})
+        return result.get('data') if result['ok'] else None
 
     def _webui_quick_login_list(self):
-        """GetQuickLoginList → 可快捷登录的 uin 字符串列表；不可达返回 []。"""
-        r = self._webui_call("/api/QQLogin/GetQuickLoginList", {})
-        if r and r.get("code") == 0:
-            data = r.get("data")
-            if isinstance(data, list):
-                out = []
-                for x in data:
-                    if isinstance(x, dict):
-                        u = x.get("uin") or x.get("Uin")
-                        if u:
-                            out.append(str(u))
-                    else:
-                        out.append(str(x))
-                return out
-        return []
+        result = self._webui_client().call('/api/QQLogin/GetQuickLoginList', {})
+        return result.get('data') if result['ok'] else None
 
-    def _webui_set_quick_login(self, uin):
-        """SetQuickLogin({"uin":...}) → 原始响应 dict；不可达返回 None。"""
-        return self._webui_call("/api/QQLogin/SetQuickLogin", {"uin": str(uin)})
+    def _webui_client(self):
+        controller = getattr(self, '_controller', None)
+        if controller is not None:
+            return controller.backend.webui
+        # Read-only probes may construct Fish without starting the service.
+        if not getattr(self, '_webui_transport', None):
+            self._webui_transport = WebUIClient(self._webui_token)
+        return self._webui_transport
 
     def _do_quick_login_heal(self, uin):
-        """后台自愈：先免重启 WebUI 快登；失败/不在列表则回退 -q 重启。"""
-        self._self_healing = True
-        self._self_healing_ts = time.time()
-        try:
-            lst = self._webui_quick_login_list()
-            if lst and str(uin) not in lst:
-                self.log("info", "qq", f"WebUI 快捷登录列表不含 {uin}，回退 -q 重启")
-                self._restart_qq(uin)
-                return
-            r = self._webui_set_quick_login(uin)
-            if r and r.get("code") == 0:
-                self.log("info", "qq", f"QQ 掉线自愈：WebUI 快捷登录已发起（uin={uin}）")
-                return
-            self.log("warn", "qq", f"WebUI 快捷登录失败: {(r or {}).get('message', '无响应')}，回退 -q 重启")
-        except Exception as e:
-            self.log("warn", "qq", f"WebUI 快捷登录不可用: {e}，回退 -q 重启")
-        self._restart_qq(uin)
+        return self._qq_controller().request('quick_login', target=uin)
 
     def qq_quick_login(self, uin=None):
-        """手动触发快捷登录（app「快速登录」按钮）。进程没活着→-q 拉起；活着且真离线→WebUI 快登（回退 -q）。"""
-        uin = uin or self._qq_self_heal_uin()
-        if not uin:
-            return {"ok": False, "error": "没有可快捷登录的 QQ 号（qq_quick_login_uin 未设置）"}
-        if not _qq_process_alive():
-            threading.Thread(target=self._restart_qq, args=(uin,), daemon=True).start()
-            return {"ok": True, "method": "restart", "uin": uin}
-        st = self._webui_check_login()
-        if st and st.get("isLogin") and not st.get("isOffline"):
-            return {"ok": False, "error": "QQ 账号当前在线（只是 WS 掉），无需快捷登录"}
-        threading.Thread(target=self._do_quick_login_heal, args=(uin,), daemon=True).start()
-        return {"ok": True, "method": "webui", "uin": uin}
-
-    def _webui_device_fingerprint(self):
-        """读当前设备 GUID（WebUI 不可达返回 None）。"""
-        r = self._webui_call("/api/QQLogin/GetDeviceGUID", {})
-        guid = None
-        if r and r.get("code") == 0:
-            d = r.get("data")
-            if isinstance(d, dict):
-                guid = d.get("guid") or d.get("GUID") or d.get("deviceGuid")
-            elif isinstance(d, str):
-                guid = d
-        return {"guid": str(guid).strip() if guid else None}
+        return self._qq_controller().request('quick_login', target=uin)
 
     def _refresh_device_fingerprint(self):
-        """在线时捕获/比对设备 GUID：首次存基准，之后漂移→告警并尝试 SetDeviceGUID 纠偏（治「频繁掉线」根因）。"""
-        fp = self._webui_device_fingerprint()
-        guid = (fp or {}).get("guid")
-        if not guid:
-            return
-        old = self.store.get_setting_raw("qq_device_guid")
-        if old is None or str(old).strip() == "":
-            self.store.set_setting("qq_device_guid", guid)
-            self.log("info", "qq", f"已记录 QQ 设备指纹基准 GUID={guid}")
-        elif str(old).strip() != guid:
-            self.log("warn", "qq", f"设备指纹漂移：旧={old} 新={guid}，QQ 可能当新设备，尝试恢复")
-            r = self._webui_call("/api/QQLogin/SetDeviceGUID", {"guid": str(old).strip()})
-            if r and r.get("code") == 0:
-                self.log("info", "qq", "已尝试恢复设备 GUID（下次重启生效）")
+        # Platform identity is diagnostic only. Never apply Windows GUID writes to Linux.
+        return {'supported': False, 'reason': 'use platform-specific read-only diagnostics'}
 
     # ---- 自省（nudge 一次 reflect）----
     def growth_evolve(self):
@@ -1124,7 +843,8 @@ class Handler(BaseHTTPRequestHandler):
                             or any(not isinstance(v, list) or any(not isinstance(t, str) for t in v) for v in profile.values())):
                         return self._send(400, {'error': '画像格式无效'})
                 updates = {k:v for k,v in body.items() if k not in ('self_profile_revision','growth_status','manual_self_profile','user_locked_settings',
-                    'memory_epoch','life_state_revision','memory_policy_version','evolution_result')}
+                    'memory_epoch','life_state_revision','memory_policy_version','evolution_result',
+                    'qq_desired_state','qq_login_target','qq_last_account','qq_last_operation','qq_operation','qq_generation','qq_runtime','qq_quick_login_uin')}
                 if 'self_profile' in updates:
                     f.store.save_manual_profile(updates.pop('self_profile'))
                 f.store.apply_manual_settings(updates)

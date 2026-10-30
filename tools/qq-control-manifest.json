@@ -1,0 +1,12 @@
+{
+  "before": {
+    "server.py": "b20e37db000b57dcaafb53a4896ab505df28ea70705d7e370ab162165149ca95",
+    "qq_bot.py": "a8293438e999925ba3e200409c86aa2872d0b0c7d09df204895f0e92acc52131",
+    "qq_control.py": "f15d09f4e10888e11c070006159dfcdd42c7c5b38b2dc71f9e68697d845c280f"
+  },
+  "after": {
+    "server.py": "b20e37db000b57dcaafb53a4896ab505df28ea70705d7e370ab162165149ca95",
+    "qq_bot.py": "a8293438e999925ba3e200409c86aa2872d0b0c7d09df204895f0e92acc52131",
+    "qq_control.py": "ddd69dcd9c6e0d9a75c96f88d6acc76f9e1f26270eaec2165a960eee6ede2a41"
+  }
+}

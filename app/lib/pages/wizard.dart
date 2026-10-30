@@ -208,6 +208,7 @@ class _WizardPageState extends State<WizardPage> {
         'personality.py': 'assets/fish/personality.py',
         'qq_bot.py': 'assets/fish/qq_bot.py',
         'qq_config.py': 'assets/fish/qq_config.py',
+        'qq_control.py': 'assets/fish/qq_control.py',
         'qq_delivery.py': 'assets/fish/qq_delivery.py',
         'qq_faces.py': 'assets/fish/qq_faces.py',
         'qq_media.py': 'assets/fish/qq_media.py',

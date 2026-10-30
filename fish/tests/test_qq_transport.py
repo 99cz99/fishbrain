@@ -121,7 +121,7 @@ class TransportTests(unittest.TestCase):
         bot = self.make_bot()
         bot._on_meta({'meta_event_type': 'lifecycle', 'sub_type': 'connect', 'self_id': 123})
         self.assertIsNone(bot.self_id)
-        bot.store.set_setting.assert_called_once_with('qq_quick_login_uin', '123')
+        bot.store.set_setting.assert_called_once_with('qq_last_account', '123')
 
     def test_api_request_keeps_original_socket_across_reconnect(self):
         bot = self.make_bot()

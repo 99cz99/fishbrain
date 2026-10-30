@@ -1,0 +1,23 @@
+{
+  "observed_at": "2026-10-30 14:13:30 +0800",
+  "online": true,
+  "stale": false,
+  "self_healing": false,
+  "qq_version": "3.2.34-53644",
+  "platform": "linux",
+  "napcat_bundle_sha256": "7c66d0239d7effe73ab6e4920eddef732a8066fb47cd19539541c72055c5f0aa",
+  "bundle_matches_local": true,
+  "empty_account_named_login_files": 2,
+  "file_role": "unverified",
+  "qq_processes_seen": 1,
+  "descriptor_read_errors": 1054,
+  "proc_locks_access": "PermissionError",
+  "restarted_qq_during_audit": false,
+  "changed_device_identity": false,
+  "additional_observed_at": "2026-10-30 14:21:46 +0800",
+  "webui_phase": "ready",
+  "core_ready": true,
+  "quick_login_candidates": 1,
+  "webui_auto_account_configured": false,
+  "windows_guid_endpoint_code_on_linux": -1
+}

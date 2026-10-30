@@ -75,7 +75,7 @@ class LinkConflicts(unittest.TestCase):
             ('heybox_feeds',{},'heybox_comment',None),
             ('get_group_msg_history',{'group_id':5},'send_message','publish')):
             self.auto.life.heartbeat = Mock(return_value={'drive':'好奇'})
-            self.auto.life.decide_action = Mock(side_effect=[[{'name':tool,'arguments':args}],[]])
+            self.auto.life.decide_action = Mock(side_effect=[{'tool_calls':[{'name':tool,'arguments':args}]},{'tool_calls':[]}])
             self.auto._route = Mock(return_value={'synthetic':'result'})
             self.auto._heartbeat_once()
             call = self.auto.life.decide_action.call_args
@@ -229,7 +229,7 @@ class LinkConflicts(unittest.TestCase):
             self.store.apply_manual_settings({'chat_scope':'clean'})
             return {'tool_calls':[{'name':'send_message','arguments':{'text':'old plan'}}]}
         brain = Mock(chat_with_tools=Mock(side_effect=plan))
-        self.assertEqual(Life(self.store,brain).decide_action('陪伴',[{'function':{'name':'send_message'}}]),[])
+        self.assertTrue(Life(self.store,brain).decide_action('陪伴',[{'function':{'name':'send_message'}}])['cancelled'])
 
 
 if __name__ == '__main__':

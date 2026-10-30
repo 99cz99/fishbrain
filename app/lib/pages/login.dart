@@ -1,32 +1,27 @@
-// login.dart — QQ 扫码登录页：显示 NapCat 二维码，轮询登录状态
+// QQ login observations and queued operations are shown separately.
 import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import '../models.dart';
 import '../theme.dart';
 
 class LoginPage extends StatefulWidget {
   final ApiClient api;
   const LoginPage({super.key, required this.api});
-
   @override
   State<LoginPage> createState() => _LoginPageState();
 }
 
 class _LoginPageState extends State<LoginPage> {
   Uint8List? _qr;
-  bool _loading = true;
-  bool _loggedIn = false;
-  String _error = '';
-  int _qrAge = -1; // 二维码生成至今秒数（/qq/status 的 qr_age，-1=还没有码）
+  QQControlStatus _status = QQControlStatus({});
+  bool _loading = true, _refreshing = false, _busy = false;
   bool _appliedOnebot = false;
-  bool _configuring = false; // 已扫码登录、正在写 OneBot 配置并重启 QQ
-  int _configuringAt = 0; // _configuring 置位时刻（ms），超时后强制复位
+  String _error = '';
   Timer? _timer;
-  bool _quickLoginConfigured = false; // /qq/status 的 quick_login_configured
-  bool _selfHealing = false; // /qq/status 的 self_healing（快捷登录在途）
 
   @override
   void initState() {
@@ -41,308 +36,144 @@ class _LoginPageState extends State<LoginPage> {
     super.dispose();
   }
 
-  bool _refreshing = false;
-
   Future<void> _tick() async {
     if (_refreshing || !mounted) return;
     _refreshing = true;
     try {
-      bool running = false;
-      bool qr = false;
-      bool online = false;
-      bool stale = false;
-      String loginReason = 'unknown';
-      try {
-        final q = await widget.api.qqStatus();
-        running = q['running'] == true;
-        qr = q['qr'] == true;
-        online = q['online'] == true;
-        stale = q['stale'] == true;
-        loginReason = (q['login_reason'] as String?) ?? 'unknown';
-        _qrAge = (q['qr_age'] as num?)?.toInt() ?? -1;
-        _quickLoginConfigured = q['quick_login_configured'] == true;
-        _selfHealing = q['self_healing'] == true;
-        final loginUin = (q['login_uin'] as String?) ?? '';
-        // 扫码登录成功（NapCat 已生成 onebot11_<uin>.json）但 OneBot WS 还没连上 → 写配置 + 重启 QQ
-        if (loginUin.isNotEmpty && !online && !_appliedOnebot) {
-          _appliedOnebot = true;
-          _configuring = true;
-          _configuringAt = DateTime.now().millisecondsSinceEpoch;
-          _applyOnebot();
-        }
-        if (online || qr) {
-          _configuring = false; // 重启完成：已在线或已出码
-        }
-      } catch (_) {
-        if (mounted) {
-          setState(() {
-            _loading = false;
-            _qr = null;
-            _loggedIn = false;
-            _error = '连不上鱼脑（先回「部署」页启动鱼脑和 QQ）';
-          });
-        }
-        return;
+      final q = await widget.api.qqStatus();
+      final status = QQControlStatus(q);
+      Uint8List? qr;
+      if (q['qr'] == true && !status.authenticated && !status.busy) {
+        qr = await widget.api.qrcode();
       }
-
-      if (online) {
-        if (mounted) {
-          setState(() {
-            _loading = false;
-            _qr = null;
-            _loggedIn = true;
-            _error = '';
-          });
+      if (!mounted) return;
+      setState(() {
+        _status = status;
+        _loading = false;
+        _qr = qr;
+        _error = '';
+      });
+      // Old per-account config filenames cannot establish current authentication.
+      if (status.modern &&
+          status.authenticated &&
+          !status.online &&
+          !status.busy &&
+          status.operation['status'] != 'unknown' &&
+          !_appliedOnebot) {
+        _appliedOnebot = true;
+        try {
+          final result = await widget.api.applyOnebot();
+          if (mounted) {
+            setState(() => _status = QQControlStatus({...q, ...result}));
+          }
+        } catch (error) {
+          if (mounted) setState(() => _error = apiErrorMessage(error));
         }
-        if (!_appliedOnebot) {
-          _appliedOnebot = true;
-          _applyOnebot();
-        }
-        return;
       }
-
-      if (_configuring &&
-          DateTime.now().millisecondsSinceEpoch - _configuringAt > 90000) {
-        _configuring = false; // 重启超时（约 90s），透出真实状态而非永久卡在「配置中」
-      }
-      if (_configuring) {
-        if (mounted) {
-          setState(() {
-            _loading = false;
-            _qr = null;
-            _loggedIn = false;
-            _error = 'QQ 已登录，正在写入 OneBot 配置并重启 QQ，请稍候（约 1 分钟）…';
-          });
-        }
-        return;
-      }
-
-      if (!running) {
-        if (mounted) {
-          setState(() {
-            _loading = false;
-            _qr = null;
-            _loggedIn = false;
-            _error = 'QQ 还没启动';
-          });
-        }
-        return;
-      }
-
-      if (!qr) {
-        if (mounted) {
-          setState(() {
-            _loading = false;
-            _qr = null;
-            _loggedIn = false;
-            if (stale) {
-              _error = _selfHealing
-                  ? 'QQ 掉线，正在快捷登录自愈…'
-                  : (_quickLoginConfigured
-                        ? 'QQ 掉线（${_reasonLabel(loginReason)}），正在尝试快捷登录自愈…'
-                        : 'QQ 掉线（${_reasonLabel(loginReason)}），鱼脑会自动重连/出码，请稍候');
-            } else {
-              _error = _qrAge >= 0
-                  ? '二维码已过期（$_qrAge 秒前生成），点「重新出码」换个新的'
-                  : 'QQ 运行中，还没出二维码，稍等…';
-            }
-          });
-        }
-        return;
-      }
-
-      try {
-        final bytes = await widget.api.qrcode();
-        if (mounted) {
-          setState(() {
-            _qr = bytes;
-            _loading = false;
-            _loggedIn = false;
-            _error = '';
-          });
-        }
-      } catch (_) {
-        if (mounted) {
-          setState(() {
-            _loading = false;
-            _qr = null;
-            _error = '读不到二维码（NapCat 还没生成，稍等重试）';
-          });
-        }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _qr = null;
+          _error = apiErrorMessage(error);
+        });
       }
     } finally {
       _refreshing = false;
     }
   }
 
-  Future<void> _applyOnebot() async {
+  Future<void> _submit(bool quick) async {
+    if (_busy || _status.busy) return;
+    setState(() => _busy = true);
     try {
-      await widget.api.applyOnebot();
-    } catch (_) {}
-  }
-
-  String _reasonLabel(String reason) {
-    if (reason.startsWith('login_error_')) {
-      return '登录报错(码${reason.substring('login_error_'.length)})';
-    }
-    switch (reason) {
-      case 'nt_timeout':
-        return 'QQ 内核超时';
-      case 'offline':
-        return '账号离线';
-      case 'waiting_scan':
-        return '待扫码';
-      case 'login_service_dropped':
-        return '登录服务断连';
-      case 'risk':
-        return '风控';
-      default:
-        return '未知';
-    }
-  }
-
-  Future<void> _restartQq() async {
-    try {
-      await widget.api.qqRefreshQr();
+      final result = quick
+          ? await widget.api.qqQuickLogin()
+          : await widget.api.qqRefreshQr();
+      if (!mounted) return;
+      setState(() {
+        _status = QQControlStatus({..._status.data, ...result});
+        _error = '';
+      });
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('操作已提交，等待 QQ 状态确认')));
+    } catch (error) {
       if (mounted) {
+        setState(() => _error = apiErrorMessage(error));
         ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('已重启 QQ，约 20 秒后出新码')));
+            .showSnackBar(SnackBar(content: Text(_error)));
       }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('重新出码失败（鱼脑在线吗？）')));
-      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
     _tick();
-  }
-
-  Future<void> _quickLogin() async {
-    try {
-      final r = await widget.api.qqQuickLogin();
-      if (mounted) {
-        final err = (r['error'] as String?) ?? '';
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(err.isNotEmpty ? err : '已发起快捷登录')),
-        );
-      }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('快捷登录失败（鱼脑在线吗？）')));
-      }
-    }
-    _tick();
-  }
-
-  Widget _quickLoginButton() {
-    return OutlinedButton.icon(
-      onPressed: _quickLogin,
-      icon: const Icon(Icons.bolt),
-      label: const Text('快速登录（免扫码）'),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final Widget body;
-    if (_loading) {
-      body = const Center(child: CircularProgressIndicator());
-    } else if (_loggedIn) {
-      body = Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.check_circle, color: AppColors.success, size: 64),
-            const SizedBox(height: 16),
-            Text('QQ 已登录', style: theme.textTheme.titleLarge),
-            const SizedBox(height: 6),
-            Text('可以回「聊天」页看看它了', style: theme.textTheme.bodySmall),
-          ],
-        ),
-      );
-    } else if (_qr != null) {
-      body = Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('用手机 QQ 扫这个码登录', style: theme.textTheme.titleMedium),
-              const SizedBox(height: 16),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(16),
-                child: Container(
-                  color: Colors.white,
-                  padding: const EdgeInsets.all(16),
-                  child: Image.memory(
-                    _qr!,
-                    width: 220,
-                    height: 220,
-                    gaplessPlayback: true,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                '二维码 ${_qrAge >= 0 ? _qrAge : 0} 秒前生成 · 约 2 分钟内有效，请尽快扫',
-                style: theme.textTheme.bodySmall,
-              ),
-              const SizedBox(height: 6),
-              Text('扫码后勾「下次免确认」，登录成功会自动跳转', style: theme.textTheme.bodySmall),
-              const SizedBox(height: 20),
-              OutlinedButton.icon(
-                onPressed: _restartQq,
-                icon: const Icon(Icons.restart_alt),
-                label: const Text('重新出码（重启 QQ）'),
-              ),
-              if (_quickLoginConfigured) ...[
-                const SizedBox(height: 8),
-                _quickLoginButton(),
-              ],
-            ],
-          ),
-        ),
-      );
-    } else {
-      body = Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(
-                Icons.qr_code_scanner,
-                size: 48,
-                color: AppColors.textSecondaryLight,
-              ),
-              const SizedBox(height: 16),
-              Text(
-                _error.isEmpty ? '等待二维码…' : _error,
-                textAlign: TextAlign.center,
-                style: theme.textTheme.bodyMedium,
-              ),
-              if (_qrAge >= 0) ...[
-                const SizedBox(height: 16),
-                OutlinedButton.icon(
-                  onPressed: _restartQq,
-                  icon: const Icon(Icons.restart_alt),
-                  label: const Text('重新出码（重启 QQ）'),
-                ),
-              ],
-              if (_quickLoginConfigured) ...[
-                const SizedBox(height: 8),
-                _quickLoginButton(),
-              ],
-            ],
-          ),
-        ),
-      );
-    }
+    final blocked = _busy || _status.busy;
+    final authenticated = _status.authenticated && _error.isEmpty;
+    final qrAge = (_status.data['qr_age'] as num?)?.toInt() ?? -1;
     return Scaffold(
       appBar: AppBar(title: const Text('扫码登录 QQ')),
-      body: body,
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : Center(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      authenticated
+                          ? Icons.check_circle
+                          : Icons.qr_code_scanner,
+                      color: authenticated
+                          ? AppColors.success
+                          : AppColors.textSecondaryLight,
+                      size: 64,
+                    ),
+                    const SizedBox(height: 16),
+                    Text(
+                      _error.isNotEmpty ? _error : _status.message,
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    if (_qr != null && !authenticated) ...[
+                      const SizedBox(height: 16),
+                      Container(
+                        color: Colors.white,
+                        padding: const EdgeInsets.all(16),
+                        child: Image.memory(
+                          _qr!,
+                          width: 220,
+                          height: 220,
+                          gaplessPlayback: true,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Text('二维码 ${qrAge < 0 ? 0 : qrAge} 秒前生成，请尽快扫码授权'),
+                    ],
+                    if (!authenticated) ...[
+                      const SizedBox(height: 20),
+                      OutlinedButton.icon(
+                        onPressed: blocked ? null : () => _submit(false),
+                        icon: const Icon(Icons.qr_code),
+                        label: const Text('重新出码'),
+                      ),
+                      if (_status.data['quick_login_configured'] == true) ...[
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed: blocked ? null : () => _submit(true),
+                          icon: const Icon(Icons.bolt),
+                          label: const Text('尝试快捷登录'),
+                        ),
+                      ],
+                    ],
+                  ],
+                ),
+              ),
+            ),
     );
   }
 }

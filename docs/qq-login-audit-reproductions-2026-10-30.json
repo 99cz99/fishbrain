@@ -1,0 +1,14 @@
+{
+  "scope": "mocked orchestration; no network or process changes",
+  "cases": {
+    "stop_pattern_matches_container_launcher": true,
+    "launcher_only_reported_as_qq_alive": true,
+    "nonzero_stop_returned_ok": true,
+    "restart_calls_start_after_stop_failure": true,
+    "unknown_list_indistinguishable_from_empty": true,
+    "empty_list_still_triggers_quick_login": true,
+    "already_logged_in_error_triggers_restart": true,
+    "accepted_initializing_login_starts_another_quick_login": true,
+    "failed_cached_auth_is_not_invalidated": true
+  }
+}
