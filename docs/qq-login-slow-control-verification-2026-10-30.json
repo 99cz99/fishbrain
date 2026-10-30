@@ -1,0 +1,62 @@
+{
+  "version": "1.0.47+61",
+  "python_tests": 186,
+  "flutter_tests": 24,
+  "static_analysis": "passed",
+  "apk_sha256": "e0e86503589b802901490fae175d6f6520dc8f7653fb726eaa15d71191663cc6",
+  "installed_apk_matches": true,
+  "runtime_modules_match": 17,
+  "qq_session_preserved": true,
+  "no_login_or_qr_request_submitted": true,
+  "before": {
+    "fish_online": false,
+    "native_state": "unknown",
+    "control_error": "transport",
+    "onebot_get_status_online": true,
+    "onebot_identity_matches": true,
+    "longer_webui_query_is_login": true,
+    "longer_webui_query_core_ready": true,
+    "longer_webui_query_seconds": 8.243
+  },
+  "after": {
+    "control_version": 2,
+    "account_ready": true,
+    "account_matches_before": true,
+    "online": true,
+    "process_known": true,
+    "session_preserved": true,
+    "operation": null,
+    "exercise": {},
+    "onebot_config_matches_delivery_contract": true,
+    "native_list_known": true,
+    "native_candidates": 1,
+    "empty_login_files": 2,
+    "cold_start_login_events": [],
+    "sqlite": "ok",
+    "runtime_hashes": {
+      "server.py": "b20e37db000b57dcaafb53a4896ab505df28ea70705d7e370ab162165149ca95",
+      "brain.py": "52357b0f2835315ca21fee4ca04c3a9223bc70f4e463c90c6b06f7885e69f97d",
+      "memory.py": "f6f923ac3de6bacb52bc01453d82ef8de3667502ead57c0b579915270e7c4bdf",
+      "qq_bot.py": "e345bcf151905900176a071ca0e5f7cd5ae08078daa0304d807b02955c6311e8",
+      "autonomy.py": "392b6c0ee9631959c3329be3dfbe65bf6d2e9ad12be67ba6dd6b1867e9a9cf22",
+      "life.py": "730a7cf08c2be1194eb2266546f197ad8abe3ffcf0566abdc01801ed6651645d",
+      "heybox.py": "53e77b90795d7ce2e7368308c72f105df7c089b351fb3cfa5731ff826f0aa42d",
+      "weather.py": "f1f9264b747d791612ad7323cb3d568e3481434a93454c63e70a25accd53835b",
+      "memory_system.py": "90e7c7658a2896290f97fa4b3c3315084183bd5e7fb60ef319a6ee46650b46af",
+      "delivery.py": "ae151fbad36a468711cf623e70e5f55fc2c016905e8cec38e0c95b62a8eb4dd2",
+      "memory_policy.py": "8fb65b58413c094732aac25c0b947db22a935317944b6dbd5096747d41229b25",
+      "personality.py": "b332f29ad0ef8613524c1dca90bfd893da8469363c59bb3f7967037a1be0b5e9",
+      "qq_config.py": "e92ceee7e8087c8da349ef1e83e7a495c39fca4975cb7535e811b408abcf2a0e",
+      "qq_delivery.py": "993277bf6cb880a54bab04270bfe66a1a009b013fa3447fbd76a8b1967043ed9",
+      "qq_media.py": "ff42aa4e4dd72420b6eb61d7b6f62c24b25203b4fda3b8e27e603fea40495a3f",
+      "qq_faces.py": "3799ebcc1e3a13b164bcb842a85a2afe45fef337836c0c8310d6158912f05fa8",
+      "qq_control.py": "47475a3965b3599bc69d8e51d8e4a0296e0b08600a296f4c5e5c25a3f6392711"
+    }
+  },
+  "device_ui": {
+    "deploy_page": "QQ 已登录，OneBot 已连接",
+    "login_page": "QQ 已登录，OneBot 已连接",
+    "relogin_button_hidden_while_online": true
+  },
+  "termux_run_command_granted": true
+}

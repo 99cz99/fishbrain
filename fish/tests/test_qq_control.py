@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from memory import Store
-from qq_control import QQController, WebUIClient, ControlError, ProcessManager
+from qq_control import QQController, QQBackend, WebUIClient, ControlError, ProcessManager
 
 
 class FakeBackend:
@@ -212,6 +212,17 @@ class ProcessIdentityTests(unittest.TestCase):
 
 
 class WebUICacheTests(unittest.TestCase):
+    def test_slow_read_budget_does_not_extend_native_write_timeout(self):
+        client = WebUIClient(lambda:'dummy')
+        client.credential = 'existing'
+        import time
+        client.credential_at = time.monotonic()
+        client.raw = Mock(return_value={'ok':True,'data':{}})
+        client.call('/read',{})
+        self.assertEqual(client.raw.call_args.kwargs['timeout'],8)
+        client.call('/action',{},mutation=True)
+        self.assertEqual(client.raw.call_args.kwargs['timeout'],2)
+
     def test_unauthorized_reauthenticates_once_but_action_timeout_does_not(self):
         client = WebUIClient(lambda: 'dummy')
         client.credential = 'old'
@@ -226,6 +237,80 @@ class WebUICacheTests(unittest.TestCase):
         client.raw.return_value = {'ok': False, 'kind': 'unknown'}
         self.assertEqual(client.call('/action', {}, mutation=True)['kind'], 'unknown')
         client.raw.assert_called_once()
+
+
+class StatusEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        self.directory=tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        root=Path(self.directory.name)
+        self.bot=Mock(connected=True,self_id='123')
+        self.transport={'last_received_at':119,'account_status_at':119,
+                        'account_status_self_id':'123','account_online':True}
+        self.bot.diagnostics.side_effect=lambda:dict(self.transport)
+        fish=Mock(qq_bot=self.bot)
+        self.backend=QQBackend(fish,root,'proot',Mock(),Mock(),root,root/'qr.png')
+        rows=[{'pid':1,'start':'a','group':1,'role':'launcher'},
+              {'pid':2,'start':'b','group':1,'role':'main'}]
+        self.backend.process=Mock(scan=Mock(return_value={'known':True,'rows':rows}))
+        self.backend.process_key=((1,'a'),(2,'b'))
+        self.backend.session_at=100
+        self.backend.last_probe=120
+        self.backend.cached={'error':'transport','at':117}
+
+    def observe(self):
+        with patch('qq_control.time.time',return_value=120),patch('qq_control.time.monotonic',return_value=120):
+            return self.backend.observe()
+
+    def test_control_timeout_does_not_hide_fresh_explicit_same_session_onebot_online(self):
+        status=self.observe()
+        self.assertTrue(status['account_ready'])
+        self.assertTrue(status['online'])
+        self.assertEqual(status['account_source'],'onebot')
+        self.assertFalse(status['native_ready'])
+        self.assertEqual(status['control_error'],'transport')
+
+    def test_old_other_session_other_account_and_arbitrary_frames_cannot_prove_login(self):
+        for values in ({'account_status_at':99},
+                       {'account_status_self_id':'456'},
+                       {'account_status_at':0,'last_received_at':120},
+                       {'account_online':None}):
+            with self.subTest(values=values):
+                old=dict(self.transport)
+                self.transport.update(values)
+                self.assertFalse(self.observe()['account_ready'])
+                self.transport=old
+        self.backend.session_at=0
+        self.transport['account_status_at']=20
+        self.assertFalse(self.observe()['online'])  # A new arbitrary frame cannot refresh old account evidence.
+
+    def test_explicit_offline_and_native_account_conflict_override_positive_history(self):
+        self.backend.cached={'state':{'isLogin':True,'coreReady':True,'loginPhase':'ready'},'account':'123','at':115}
+        self.transport['account_online']=False
+        self.assertFalse(self.observe()['account_ready'])
+        self.assertFalse(self.observe()['online'])
+        self.transport['account_online']=True
+        self.backend.cached={'state':{'isLogin':False,'isOffline':True,'coreReady':False,'loginPhase':'offline'},'at':119}
+        self.assertFalse(self.observe()['online'])
+        self.backend.cached={'state':{'isLogin':True,'coreReady':True,'loginPhase':'ready'},'account':'456','at':119}
+        self.assertFalse(self.observe()['online'])
+
+    def test_config_read_cannot_authorize_a_write_after_stop_supersedes_the_job(self):
+        store=Store(':memory:')
+        self.addCleanup(store.close)
+        backend=FakeBackend()
+        backend.obs['account_ready']=True
+        controller=QQController(store,backend)
+        write=Mock()
+        def configure(guard):
+            controller.request('stop')
+            return guard(write)
+        backend.configure.side_effect=configure
+        controller.request('configure')
+        controller.tick()
+        write.assert_not_called()
+        self.assertEqual(controller.operation['kind'],'stop')
+        self.assertEqual(controller.operation['status'],'queued')
 
 
 if __name__ == '__main__':

@@ -31,6 +31,8 @@ token = (root/'.api-token').read_text().strip()
 req = urllib.request.Request('http://127.0.0.1:8765/qq/status', headers={'Authorization': 'Bearer '+token})
 with urllib.request.urlopen(req, timeout=15) as r:
     data = json.load(r)
+    if isinstance(data.get('transport'),dict):
+        data['transport']={k:v for k,v in data['transport'].items() if k!='account_status_self_id'}
     emit('qq_status', {k: data.get(k) for k in ('running', 'online', 'qr', 'qr_age', 'stale',
                                               'login_reason', 'quick_login_configured', 'self_healing', 'transport')})
 emit('process_alive_heuristic', _qq_process_alive())

@@ -43,6 +43,25 @@ class QQApi extends ApiClient {
 }
 
 void main() {
+  test('current online status supersedes an old unknown login result but stopping remains visible', () {
+    final data = <String, dynamic>{
+      'control_version': 2,
+      'account_ready': true,
+      'online': true,
+      'operation': {
+        'kind': 'quick_login',
+        'status': 'unknown',
+        'error': '旧登录结果未知',
+      },
+    };
+    expect(QQControlStatus(data).message, 'QQ 已登录，OneBot 已连接');
+    data['operation'] = {
+      'kind': 'stop',
+      'status': 'running',
+      'phase': 'stopping',
+    };
+    expect(QQControlStatus(data).message, contains('正在停止'));
+  });
   test('native authentication and business availability are independent', () {
     final s = QQControlStatus({
       'control_version': 2,

@@ -148,6 +148,8 @@ class TransportTests(unittest.TestCase):
         def backoff(seconds):
             self.assertFalse(bot.connected)
             self.assertIsNone(bot.self_id)
+            self.assertIsNone(bot._account_status_at)
+            self.assertIsNone(bot._account_status_self_id)
             bot._running = False
         bot._stop_event.wait = backoff
         with patch('qq_bot.websocket.create_connection', return_value=ws):
@@ -155,6 +157,19 @@ class TransportTests(unittest.TestCase):
         bot._worker_thread.join(2)
         ws.recv.assert_called_once()
         ws.close.assert_called_once()
+
+    def test_account_evidence_has_its_own_time_and_identity_and_stop_clears_it(self):
+        bot=self.make_bot()
+        bot.self_id=123
+        with patch('qq_bot.time.time',return_value=100):
+            bot._update_account_state({'online':True})
+        bot._last_received_at=200
+        bot._update_account_state({'online':'true'})
+        self.assertEqual(bot.diagnostics()['account_status_at'],100)
+        self.assertEqual(bot.diagnostics()['account_status_self_id'],123)
+        bot.stop()
+        self.assertIsNone(bot.diagnostics()['account_status_at'])
+        self.assertIsNone(bot.diagnostics()['account_status_self_id'])
 
     def test_worker_survives_event_and_database_failure(self):
         bot = self.make_bot()

@@ -11,6 +11,12 @@ class QQControlStatus {
   bool get online => data['online'] == true;
   bool get authenticated => modern ? data['account_ready'] == true : online;
   String get message {
+    // Current positive evidence supersedes an old login error. Stop/restart
+    // work still takes priority while it is actively changing the session.
+    if (!stopping && operation['phase'] != 'stopping') {
+      if (online) return 'QQ 已登录，OneBot 已连接';
+      if (authenticated) return 'QQ 已登录，等待 OneBot 连接';
+    }
     final error = operation['error'];
     if (error is String && error.isNotEmpty) return error;
     if (busy) {

@@ -118,6 +118,8 @@ class QQBot:
         self.self_id = None   # 登录后的 QQ 号（meta_event connect 里拿到）
         self.connected = False   # OneBot WS 是否建立（真实连接态，区别于 TCP 探活）
         self.account_online = None  # None=尚无账号状态；False=平台明确报告离线
+        self._account_status_at = None
+        self._account_status_self_id = None
         self._ws = None
         self._running = False
         self._thread = None
@@ -157,6 +159,8 @@ class QQBot:
             "processing_since": self._processing_since,
             "health_probe_count": self._health_probe_count,
             "account_online": self.account_online,
+            "account_status_at": self._account_status_at,
+            "account_status_self_id": self._account_status_self_id,
             "delivery": self.store.delivery_counts(),
         }
 
@@ -174,6 +178,8 @@ class QQBot:
         self._send_wake.set()
         self.connected = False
         self.account_online = None
+        self._account_status_at = None
+        self._account_status_self_id = None
         self.self_id = None
         if self._ws:
             self._ws.close()
@@ -258,6 +264,8 @@ class QQBot:
             finally:
                 self.connected = False
                 self.account_online = None
+                self._account_status_at = None
+                self._account_status_self_id = None
                 self.self_id = None
                 self._ws = None
                 with self._lock:
@@ -1243,6 +1251,8 @@ class QQBot:
     def _update_account_state(self, status):
         if isinstance(status, dict) and isinstance(status.get("online"), bool):
             self.account_online = status["online"]
+            self._account_status_at = time.time()
+            self._account_status_self_id = self.self_id
 
     # ---- 回复决策：私聊/群@必回，群里其他人走主动插话漏斗 ----
     def _is_at_me(self, message):

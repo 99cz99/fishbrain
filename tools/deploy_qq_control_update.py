@@ -21,9 +21,11 @@ def digest(path):
     return hashlib.sha256(path.read_bytes().replace(b'\r\n', b'\n')).hexdigest()
 
 
-def request(path):
+def request(path, body=None):
     token = (deploy.ROOT/'.api-token').read_text().strip()
-    req = urllib.request.Request('http://127.0.0.1:8765'+path, headers={'Authorization':'Bearer '+token})
+    req = urllib.request.Request('http://127.0.0.1:8765'+path,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'})
     with urllib.request.urlopen(req, timeout=5) as response:
         return json.load(response)
 
@@ -47,7 +49,15 @@ def install(stage):
         raise RuntimeError('Expected an identifiable existing QQ process')
     before_status = request('/qq/status')
     if not before_status.get('online'):
-        raise RuntimeError('Expected an online session before the non-disruptive update')
+        # v1.0.46 can hide a live OneBot session when WebUI takes >2 seconds.
+        # Confirm through two current read-only replies before preserving it.
+        live = request('/qq/api', {'action':'get_status','params':{}})
+        identity = request('/qq/api', {'action':'get_login_info','params':{}})
+        if not (live.get('ok') and identity.get('ok')
+                and ((live.get('response') or {}).get('data') or {}).get('online') is True
+                and str(((identity.get('response') or {}).get('data') or {}).get('user_id')) == str(before_status.get('self_id'))
+                and before_status.get('self_id')):
+            raise RuntimeError('Expected a confirmed live account before the non-disruptive update')
     config = tomllib.loads((root/'config.toml').read_text())
     db = (root/config.get('server',{}).get('db_path','fish.db')).resolve()
     if db.parent != root.resolve() or not db.is_file():

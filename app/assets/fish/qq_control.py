@@ -35,14 +35,14 @@ class WebUIClient:
     def invalidate(self):
         self.credential, self.credential_at = None, 0
 
-    def raw(self, path, body=None, credential=None, mutation=False):
+    def raw(self, path, body=None, credential=None, mutation=False, timeout=None):
         headers = {'Content-Type': 'application/json'}
         if credential:
             headers['Authorization'] = 'Bearer '+credential
         request = urllib.request.Request(self.url+path, headers=headers,
             data=json.dumps(body).encode() if body is not None else None)
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+            with urllib.request.urlopen(request, timeout=timeout or self.timeout) as response:
                 result = json.load(response)
             if not isinstance(result, dict) or 'code' not in result:
                 return {'ok': False, 'kind': 'protocol', 'message': 'WebUI 响应格式无效'}
@@ -68,15 +68,24 @@ class WebUIClient:
 
     def call(self, path, body=None, mutation=False):
         with self.lock:
+            # Slow proot reads must not turn an online account into a failed
+            # login. Keep native writes short and the whole control call bounded.
+            deadline = time.monotonic()+max(12, self.timeout)
+            def raw(endpoint, payload, credential=None, mutation=False):
+                remaining = deadline-time.monotonic()
+                if remaining <= 0:
+                    return {'ok': False, 'kind': 'transport', 'message': 'WebUI 查询等待超时'}
+                timeout = min(self.timeout if mutation else max(8, self.timeout), remaining)
+                return self.raw(endpoint, payload, credential, mutation, timeout=timeout)
             for attempt in range(2):
                 if not self.credential or time.monotonic()-self.credential_at >= 3300:
                     digest = hashlib.sha256((self.token()+'.napcat').encode()).hexdigest()
-                    auth = self.raw('/api/auth/login', {'hash': digest})
+                    auth = raw('/api/auth/login', {'hash': digest})
                     data = auth.get('data') or {}
                     if not auth['ok'] or not isinstance(data, dict) or not data.get('Credential'):
                         return auth if not auth['ok'] else {'ok': False, 'kind': 'protocol', 'message': 'WebUI 未返回控制凭证'}
                     self.credential, self.credential_at = data['Credential'], time.monotonic()
-                result = self.raw(path, body, self.credential, mutation)
+                result = raw(path, body, self.credential, mutation)
                 if result.get('kind') != 'auth':
                     return result
                 self.invalidate()
@@ -197,6 +206,25 @@ class QQBackend:
                          and transport.get('last_received_at', 0)
                          and transport['last_received_at'] >= self.session_at)
         match = bool(ready and bot and str(bot.self_id) == account)
+        native_ready = ready
+        status_at = transport.get('account_status_at') or 0
+        status_account = transport.get('account_status_self_id')
+        status_fresh = bool(connected and status_at >= self.session_at
+                            and 0 <= time.time()-status_at <= 90
+                            and str(status_account) == str(bot.self_id))
+        explicit_offline = bool(status_fresh and transport.get('account_online') is False)
+        native_rejects = bool(state and (state.get('isOffline') is True or state.get('isLogin') is False))
+        native_mismatch = bool(account and bot and str(bot.self_id) != account)
+        onebot_ready = bool(status_fresh and transport.get('account_online') is True
+                            and scan['known'] and sum(r['role']=='main' for r in rows)==1
+                            and not native_rejects and not native_mismatch)
+        source = 'webui' if ready else 'none'
+        if not ready and onebot_ready:
+            ready, account, match, source = True, str(bot.self_id), True, 'onebot'
+        if explicit_offline:
+            match = False  # A live explicit offline report always blocks business-online.
+            if status_at >= self.cached.get('at', 0):
+                ready, source = False, 'none'
         try:
             qr_at = self.qr_path.stat().st_mtime
             qr_age = int(time.time()-qr_at)
@@ -205,13 +233,14 @@ class QQBackend:
             qr_age, qr = -1, False
         return {'process_known': scan['known'], 'processes': rows, 'running': running,
                 'launching': launching, 'process_key': key, 'qr': qr, 'qr_age': qr_age,
-                'account_state': 'ready' if ready else ('offline' if state.get('isOffline') else phase),
+                'account_state': 'ready' if ready else ('offline' if state.get('isOffline') or explicit_offline else phase),
                 'account': account, 'account_ready': ready, 'login_phase': phase,
+                'account_source': source, 'native_ready': native_ready,
                 'login_state_known': state_known,
                 'login_accepted': bool(state.get('qrLoginAccepted') or phase in BUSY_PHASES),
                 'transport_state': 'connected' if connected else 'disconnected',
                 'online': bool(ready and connected and match), 'transport': transport,
-                'observed_at': time.time(), 'account_observed_at': self.cached.get('at'),
+                'observed_at': time.time(), 'account_observed_at': status_at if source=='onebot' else self.cached.get('at'),
                 'control_error': self.cached.get('error')}
 
     def spawn(self, target):
@@ -220,7 +249,7 @@ class QQBackend:
             subprocess.Popen([self.proot, 'login', 'debian', '--hostname', 'qq-bot', '--', 'bash', '-c', self.command(target)],
                              env=self.env(), stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
 
-    def configure(self):
+    def configure(self, guard=None):
         from qq_config import delivery_config
         current = self.webui.call('/api/OB11Config/GetConfig', {})
         if not current['ok']:
@@ -234,7 +263,8 @@ class QQBackend:
         if data == wanted:
             return {'ok': True, 'already': True}
         # Native config save/reload, never restart an accepted QQ login.
-        return self.webui.call('/api/OB11Config/SetConfig', {'config': json.dumps(wanted)}, mutation=True)
+        write = lambda: self.webui.call('/api/OB11Config/SetConfig', {'config': json.dumps(wanted)}, mutation=True)
+        return guard(write) if guard else write()
 
     def check_configuration(self):
         result = self.webui.call('/api/OB11Config/GetConfig', {})
@@ -508,7 +538,7 @@ class QQController:
                 if not obs.get('login_state_known'):
                     op.update(status='waiting', phase='checking')
                     return  # Unknown account state cannot authorize a native login mutation.
-                listed = self._act(op, lambda: self.backend.webui.call('/api/QQLogin/GetQuickLoginList', {}))
+                listed = self.backend.webui.call('/api/QQLogin/GetQuickLoginList', {})
                 if not listed['ok']:
                     self._failure(op, listed)
                     return
@@ -533,7 +563,7 @@ class QQController:
             if op['status'] == 'unknown':
                 return
             op['config_submitted'] = True
-            result = self._act(op, self.backend.configure)
+            result = self.backend.configure(lambda write: self._act(op, write))
             if result['ok']:
                 self._finish(op)
             else:
