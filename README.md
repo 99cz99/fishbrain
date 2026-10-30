@@ -2,7 +2,7 @@
 
 一个 24h 在线、像真人一样的 AI 朋友（赛博生命体），住在安卓手机里，通过协议/API 使用 QQ 和小黑盒。B站接入仍在规划中。
 
-当前源码版本 **v1.0.47**（Android 8.0+），已本地构建并安装验证。公开发布的安装包入口：[下载 APK](https://github.com/99cz99/fishbrain/releases/latest/download/app-release.apk) · [版本与升级说明](https://github.com/99cz99/fishbrain/releases/latest)。本次更新包含配套鱼脑运行源码，升级时请同时更新 APK 与部署资源。
+当前版本 **v1.0.48**（Android 8.0+），已构建并安装验证。安装包入口：[下载 APK](https://github.com/99cz99/fishbrain/releases/latest/download/app-release.apk) · [版本与升级说明](https://github.com/99cz99/fishbrain/releases/latest)。本次更新包含配套鱼脑运行源码，升级时请同时更新 APK 与部署资源。
 
 ## 架构
 
@@ -76,7 +76,7 @@ APK 输出至 `app/build/app/outputs/flutter-apk/app-release.apk`。Python 运�
 
 ## 安装包
 
-已发布 APK 与 SHA-256 校验文件见 [Releases](https://github.com/99cz99/fishbrain/releases/latest)。当前源码版本为 `1.0.47+61`，本地构建与升级说明见[发布说明](docs/releases/v1.0.47.md)。
+已发布 APK 与 SHA-256 校验文件见 [Releases](https://github.com/99cz99/fishbrain/releases/latest)。当前源码版本为 `1.0.48+62`，本地构建与升级说明见[发布说明](docs/releases/v1.0.48.md)。
 
 ## 文档
 
@@ -85,6 +85,7 @@ APK 输出至 `app/build/app/outputs/flutter-apk/app-release.apk`。Python 运�
 - [v1.0.43 发布说明](docs/releases/v1.0.43.md)
 - [v1.0.44 本地构建与升级说明](docs/releases/v1.0.44.md)
 - [v1.0.47 慢查询导致登录状态误判修复](docs/releases/v1.0.47.md)
+- [v1.0.48 语义召回与原始来源核对修复](docs/releases/v1.0.48.md)
 - [v1.0.46 QQ 登录与调度修复](docs/releases/v1.0.46.md)
 - [v1.0.45 App 启动确认修复](docs/releases/v1.0.45.md)
 - [架构、开发约定与部署说明](CLAUDE.md)

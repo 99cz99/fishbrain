@@ -1,0 +1,633 @@
+{
+  "mode": "app_in_background",
+  "samples": 13,
+  "seconds": 60.5,
+  "all_online": true,
+  "same_processes": true,
+  "samples_data": [
+    {
+      "elapsed": 0.0,
+      "time": "2026-10-30 19:39:26",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 4547,
+        "desired_state": "running",
+        "operation": {
+          "id": "35b84d6130eb4af0b7d0dcb8fdf70cfb:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360101.3044157
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360359.144703,
+        "account_status_at": 1793360359.1447294,
+        "account_online": true
+      },
+      "processes": [
+        {
+          "pid": 13378,
+          "start": "66295880",
+          "group": 13378,
+          "role": "launcher"
+        },
+        {
+          "pid": 13423,
+          "start": "66296138",
+          "group": 13378,
+          "role": "main"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 5.0,
+      "time": "2026-10-30 19:39:31",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 4553,
+        "desired_state": "running",
+        "operation": {
+          "id": "35b84d6130eb4af0b7d0dcb8fdf70cfb:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360101.3044157
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360359.144703,
+        "account_status_at": 1793360359.1447294,
+        "account_online": true
+      },
+      "processes": [
+        {
+          "pid": 13378,
+          "start": "66295880",
+          "group": 13378,
+          "role": "launcher"
+        },
+        {
+          "pid": 13423,
+          "start": "66296138",
+          "group": 13378,
+          "role": "main"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 10.1,
+      "time": "2026-10-30 19:39:36",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 4557,
+        "desired_state": "running",
+        "operation": {
+          "id": "35b84d6130eb4af0b7d0dcb8fdf70cfb:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360101.3044157
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360359.144703,
+        "account_status_at": 1793360359.1447294,
+        "account_online": true
+      },
+      "processes": [
+        {
+          "pid": 13378,
+          "start": "66295880",
+          "group": 13378,
+          "role": "launcher"
+        },
+        {
+          "pid": 13423,
+          "start": "66296138",
+          "group": 13378,
+          "role": "main"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 15.1,
+      "time": "2026-10-30 19:39:41",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 4564,
+        "desired_state": "running",
+        "operation": {
+          "id": "35b84d6130eb4af0b7d0dcb8fdf70cfb:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360101.3044157
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360359.144703,
+        "account_status_at": 1793360359.1447294,
+        "account_online": true
+      },
+      "processes": [
+        {
+          "pid": 13378,
+          "start": "66295880",
+          "group": 13378,
+          "role": "launcher"
+        },
+        {
+          "pid": 13423,
+          "start": "66296138",
+          "group": 13378,
+          "role": "main"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 20.2,
+      "time": "2026-10-30 19:39:47",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 4568,
+        "desired_state": "running",
+        "operation": {
+          "id": "35b84d6130eb4af0b7d0dcb8fdf70cfb:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360101.3044157
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360359.144703,
+        "account_status_at": 1793360359.1447294,
+        "account_online": true
+      },
+      "processes": [
+        {
+          "pid": 13378,
+          "start": "66295880",
+          "group": 13378,
+          "role": "launcher"
+        },
+        {
+          "pid": 13423,
+          "start": "66296138",
+          "group": 13378,
+          "role": "main"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 25.2,
+      "time": "2026-10-30 19:39:52",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 4574,
+        "desired_state": "running",
+        "operation": {
+          "id": "35b84d6130eb4af0b7d0dcb8fdf70cfb:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360101.3044157
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360389.1588306,
+        "account_status_at": 1793360389.1588626,
+        "account_online": true
+      },
+      "processes": [
+        {
+          "pid": 13378,
+          "start": "66295880",
+          "group": 13378,
+          "role": "launcher"
+        },
+        {
+          "pid": 13423,
+          "start": "66296138",
+          "group": 13378,
+          "role": "main"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 30.2,
+      "time": "2026-10-30 19:39:57",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 4578,
+        "desired_state": "running",
+        "operation": {
+          "id": "35b84d6130eb4af0b7d0dcb8fdf70cfb:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360101.3044157
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360389.1588306,
+        "account_status_at": 1793360389.1588626,
+        "account_online": true
+      },
+      "processes": [
+        {
+          "pid": 13378,
+          "start": "66295880",
+          "group": 13378,
+          "role": "launcher"
+        },
+        {
+          "pid": 13423,
+          "start": "66296138",
+          "group": 13378,
+          "role": "main"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 35.3,
+      "time": "2026-10-30 19:40:02",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 4582,
+        "desired_state": "running",
+        "operation": {
+          "id": "35b84d6130eb4af0b7d0dcb8fdf70cfb:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360101.3044157
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360389.1588306,
+        "account_status_at": 1793360389.1588626,
+        "account_online": true
+      },
+      "processes": [
+        {
+          "pid": 13378,
+          "start": "66295880",
+          "group": 13378,
+          "role": "launcher"
+        },
+        {
+          "pid": 13423,
+          "start": "66296138",
+          "group": 13378,
+          "role": "main"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 40.3,
+      "time": "2026-10-30 19:40:07",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 4588,
+        "desired_state": "running",
+        "operation": {
+          "id": "35b84d6130eb4af0b7d0dcb8fdf70cfb:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360101.3044157
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360389.1588306,
+        "account_status_at": 1793360389.1588626,
+        "account_online": true
+      },
+      "processes": [
+        {
+          "pid": 13378,
+          "start": "66295880",
+          "group": 13378,
+          "role": "launcher"
+        },
+        {
+          "pid": 13423,
+          "start": "66296138",
+          "group": 13378,
+          "role": "main"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 45.3,
+      "time": "2026-10-30 19:40:12",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 4592,
+        "desired_state": "running",
+        "operation": {
+          "id": "35b84d6130eb4af0b7d0dcb8fdf70cfb:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360101.3044157
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360389.1588306,
+        "account_status_at": 1793360389.1588626,
+        "account_online": true
+      },
+      "processes": [
+        {
+          "pid": 13378,
+          "start": "66295880",
+          "group": 13378,
+          "role": "launcher"
+        },
+        {
+          "pid": 13423,
+          "start": "66296138",
+          "group": 13378,
+          "role": "main"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 50.4,
+      "time": "2026-10-30 19:40:17",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 4598,
+        "desired_state": "running",
+        "operation": {
+          "id": "35b84d6130eb4af0b7d0dcb8fdf70cfb:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360101.3044157
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360389.1588306,
+        "account_status_at": 1793360389.1588626,
+        "account_online": true
+      },
+      "processes": [
+        {
+          "pid": 13378,
+          "start": "66295880",
+          "group": 13378,
+          "role": "launcher"
+        },
+        {
+          "pid": 13423,
+          "start": "66296138",
+          "group": 13378,
+          "role": "main"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 55.4,
+      "time": "2026-10-30 19:40:22",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 4602,
+        "desired_state": "running",
+        "operation": {
+          "id": "35b84d6130eb4af0b7d0dcb8fdf70cfb:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360101.3044157
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360419.1743574,
+        "account_status_at": 1793360419.1743872,
+        "account_online": true
+      },
+      "processes": [
+        {
+          "pid": 13378,
+          "start": "66295880",
+          "group": 13378,
+          "role": "launcher"
+        },
+        {
+          "pid": 13423,
+          "start": "66296138",
+          "group": 13378,
+          "role": "main"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 60.5,
+      "time": "2026-10-30 19:40:27",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 4609,
+        "desired_state": "running",
+        "operation": {
+          "id": "35b84d6130eb4af0b7d0dcb8fdf70cfb:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360101.3044157
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360419.1743574,
+        "account_status_at": 1793360419.1743872,
+        "account_online": true
+      },
+      "processes": [
+        {
+          "pid": 13378,
+          "start": "66295880",
+          "group": 13378,
+          "role": "launcher"
+        },
+        {
+          "pid": 13423,
+          "start": "66296138",
+          "group": 13378,
+          "role": "main"
+        }
+      ],
+      "new_events": []
+    }
+  ]
+}

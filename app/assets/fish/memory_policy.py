@@ -2,6 +2,7 @@
 import hashlib
 import json
 import re
+from datetime import datetime
 
 TRUST_RULES = (
     '行为约束和用户明确控制优先。底层人设及人工画像优先于自动特质，心情只影响临时表达。'
@@ -32,9 +33,18 @@ def person_code(entity):
 
 
 def evidence_data(rows):
+    def local_time(row):
+        try:
+            ts = float(row.get('occurred_at') or 0)
+            return datetime.fromtimestamp(ts).astimezone().isoformat(timespec='seconds') if ts > 0 else '未知'
+        except (ValueError, TypeError, OverflowError, OSError):
+            return '未知'
     return [dict(id=r.get('id'), kind=r.get('kind'), person=person_code(r.get('entity_id')),
                  name=r.get('subject'), scope=r.get('scope'), time=r.get('occurred_at'),
+                 time_local=local_time(r), recorded_at=r.get('created_at'),
                  status=r.get('status'), content=redact_secrets(r.get('content', '')),
+                 source_type=r.get('source_type', 'user_statement' if r.get('kind') == 'episode' else
+                                 'assistant_experience' if r.get('kind') == 'experience' else 'assertion'),
                  source_ids=r.get('source_ids', [])) for r in rows]
 
 

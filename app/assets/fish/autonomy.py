@@ -355,13 +355,17 @@ class Autonomy:
                 "密码、验证码、令牌、密钥、身份证等敏感凭据不得提炼为事实或待办；不照抄敏感值。"
                 "同一事实已有且未改变时不要重复。明确纠正才在replaces中列出旧事实ID，不能删除不相关事实。"
                 "intention仅用于对方明确提及的约定、待反馈事项；不得凭空设提醒。"
+                "普通即时提问、请求解释上一句话、测试开场、回声、不完整片段和一次性状态只保留原事件，memories=[]。"
+                "不要把‘询问某事，等待回答’存为长期事项。fact应表达值得保留的明确陈述，不能只是‘说话人表示了某句话’。"
+                "每项给出speech_act：fact为assertion，intention为commitment；quote必须是所引事件中的连续原话，不能改写。"
                 "取消/完成事项用state=cancelled/done及replaces指向旧事项；其他state=active。"
                 "due_at为明确日期换算的Unix秒，不确定就0，参照事件发生时间及本地时区。"
                 "source_ids必须是本批事件ID，content保留必要时间限定。\n"
                 f"当前本地时间={time.strftime('%Y-%m-%d %H:%M:%S %z')}，Unix={time.time()}\n"
                 f"已有事实和事项={json.dumps(existing, ensure_ascii=False)}\n"
                 f"本批事件={json.dumps([{k:r[k] for k in ('id','subject','content','created_at','occurred_at')} for r in episodes], ensure_ascii=False)}\n"
-                '返回JSON对象：{"memories":[{"kind":"fact|intention","content":"内容","importance":5,'
+                '返回JSON对象：{"schema_version":2,"memories":[{"kind":"fact|intention","content":"内容","importance":5,'
+                '"speech_act":"assertion|commitment","quote":"对应的连续原话",'
                 '"emotion":0,"source_ids":[1],"replaces":[],"due_at":0,"state":"active"}],'
                 '"appraisal":{"desirability":0,"intensity":0,"arousal":0,"dominance":0,"attribution":0}}。'
                 '没有值得提炼的内容就memories=[]。'
@@ -372,6 +376,8 @@ class Autonomy:
             )
             reply = self.brain.chat([{"role": "system", "content": TRUST_RULES}, {"role": "user", "content": prompt}])
             obj = self._parse_json(reply)
+            if not isinstance(obj, dict) or obj.get('schema_version') != 2:
+                raise ValueError('记忆整理缺少来源验证版本')
             with self.store._lock:
                 if any(not self.store._rows("id=? AND status='active' AND processed=0", (r['id'],), 1) for r in episodes):
                     return

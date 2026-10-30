@@ -1,0 +1,937 @@
+{
+  "trigger": "user_operated_app",
+  "agent_sent_start_or_login": false,
+  "app_start_operation_created_at": 1793360799.478975,
+  "first_online": "2026-10-30 19:47:18",
+  "samples": [
+    {
+      "elapsed": 172.4,
+      "time": "2026-10-30 19:46:43",
+      "state": {
+        "running": true,
+        "account_ready": false,
+        "account_source": "none",
+        "native_ready": false,
+        "online": false,
+        "login_phase": "unknown",
+        "login_accepted": false,
+        "control_error": "transport",
+        "qr": false,
+        "qr_age": 4983,
+        "desired_state": "running",
+        "operation": {
+          "id": "83916d84d6fc403e9370177d5612b28b:1",
+          "kind": "start",
+          "status": "waiting",
+          "phase": "starting",
+          "error": "",
+          "code": "",
+          "created_at": 1793360799.478975
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": null,
+        "account_status_at": null,
+        "account_online": null
+      },
+      "processes": [
+        {
+          "pid": 17402,
+          "start": "66365696",
+          "group": 17402,
+          "role": "launcher"
+        },
+        {
+          "pid": 17434,
+          "start": "66365897",
+          "group": 17402,
+          "role": "main"
+        }
+      ],
+      "fish_processes": [
+        {
+          "pid": 17309,
+          "command": "sh"
+        },
+        {
+          "pid": 17313,
+          "command": "python"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 177.5,
+      "time": "2026-10-30 19:46:48",
+      "state": {
+        "running": true,
+        "account_ready": false,
+        "account_source": "none",
+        "native_ready": false,
+        "online": false,
+        "login_phase": "unknown",
+        "login_accepted": false,
+        "control_error": "transport",
+        "qr": false,
+        "qr_age": 4989,
+        "desired_state": "running",
+        "operation": {
+          "id": "83916d84d6fc403e9370177d5612b28b:1",
+          "kind": "start",
+          "status": "waiting",
+          "phase": "starting",
+          "error": "",
+          "code": "",
+          "created_at": 1793360799.478975
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": null,
+        "account_status_at": null,
+        "account_online": null
+      },
+      "processes": [
+        {
+          "pid": 17402,
+          "start": "66365696",
+          "group": 17402,
+          "role": "launcher"
+        },
+        {
+          "pid": 17434,
+          "start": "66365897",
+          "group": 17402,
+          "role": "main"
+        }
+      ],
+      "fish_processes": [
+        {
+          "pid": 17309,
+          "command": "sh"
+        },
+        {
+          "pid": 17313,
+          "command": "python"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 182.6,
+      "time": "2026-10-30 19:46:53",
+      "state": {
+        "running": true,
+        "account_ready": false,
+        "account_source": "none",
+        "native_ready": false,
+        "online": false,
+        "login_phase": "unknown",
+        "login_accepted": false,
+        "control_error": "transport",
+        "qr": false,
+        "qr_age": 4993,
+        "desired_state": "running",
+        "operation": {
+          "id": "83916d84d6fc403e9370177d5612b28b:1",
+          "kind": "start",
+          "status": "waiting",
+          "phase": "starting",
+          "error": "",
+          "code": "",
+          "created_at": 1793360799.478975
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": null,
+        "account_status_at": null,
+        "account_online": null
+      },
+      "processes": [
+        {
+          "pid": 17402,
+          "start": "66365696",
+          "group": 17402,
+          "role": "launcher"
+        },
+        {
+          "pid": 17434,
+          "start": "66365897",
+          "group": 17402,
+          "role": "main"
+        }
+      ],
+      "fish_processes": [
+        {
+          "pid": 17309,
+          "command": "sh"
+        },
+        {
+          "pid": 17313,
+          "command": "python"
+        }
+      ],
+      "new_events": [
+        {
+          "file": "qq.log",
+          "text": "[[id]:1030/[id].[id]:ERROR:dbus/object_proxy.cc:573] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: "
+        },
+        {
+          "file": "qq.log",
+          "text": "[[id]:1030/[id].[id]:ERROR:dbus/object_proxy.cc:573] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: "
+        },
+        {
+          "file": "qq.log",
+          "text": "[[id]:1030/[id].[id]:ERROR:dbus/object_proxy.cc:573] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: "
+        },
+        {
+          "file": "qq.log",
+          "text": "[[id]:1030/[id].[id]:ERROR:dbus/object_proxy.cc:573] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: "
+        }
+      ]
+    },
+    {
+      "elapsed": 187.7,
+      "time": "2026-10-30 19:46:58",
+      "state": {
+        "running": true,
+        "account_ready": false,
+        "account_source": "none",
+        "native_ready": false,
+        "online": false,
+        "login_phase": "unknown",
+        "login_accepted": false,
+        "control_error": "transport",
+        "qr": false,
+        "qr_age": 5000,
+        "desired_state": "running",
+        "operation": {
+          "id": "83916d84d6fc403e9370177d5612b28b:1",
+          "kind": "start",
+          "status": "waiting",
+          "phase": "starting",
+          "error": "",
+          "code": "",
+          "created_at": 1793360799.478975
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": null,
+        "account_status_at": null,
+        "account_online": null
+      },
+      "processes": [
+        {
+          "pid": 17402,
+          "start": "66365696",
+          "group": 17402,
+          "role": "launcher"
+        },
+        {
+          "pid": 17434,
+          "start": "66365897",
+          "group": 17402,
+          "role": "main"
+        }
+      ],
+      "fish_processes": [
+        {
+          "pid": 17309,
+          "command": "sh"
+        },
+        {
+          "pid": 17313,
+          "command": "python"
+        }
+      ],
+      "new_events": [
+        {
+          "file": "qq.log",
+          "text": "10-30 11:46:56 [info] [PacketHandler] 初始化成功"
+        },
+        {
+          "file": "qq.log",
+          "text": "10-30 11:46:57 [info] 正在快速登录  [id]"
+        }
+      ]
+    },
+    {
+      "elapsed": 192.7,
+      "time": "2026-10-30 19:47:03",
+      "state": {
+        "running": true,
+        "account_ready": false,
+        "account_source": "none",
+        "native_ready": false,
+        "online": false,
+        "login_phase": "initializing",
+        "login_accepted": true,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 5005,
+        "desired_state": "running",
+        "operation": {
+          "id": "83916d84d6fc403e9370177d5612b28b:1",
+          "kind": "start",
+          "status": "waiting",
+          "phase": "starting",
+          "error": "",
+          "code": "",
+          "created_at": 1793360799.478975
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": null,
+        "account_status_at": null,
+        "account_online": null
+      },
+      "processes": [
+        {
+          "pid": 17402,
+          "start": "66365696",
+          "group": 17402,
+          "role": "launcher"
+        },
+        {
+          "pid": 17434,
+          "start": "66365897",
+          "group": 17402,
+          "role": "main"
+        }
+      ],
+      "fish_processes": [
+        {
+          "pid": 17309,
+          "command": "sh"
+        },
+        {
+          "pid": 17313,
+          "command": "python"
+        }
+      ],
+      "new_events": [
+        {
+          "file": "qq.log",
+          "text": "[BuglyService.cpp][registBugly][589]set signal stack"
+        }
+      ]
+    },
+    {
+      "elapsed": 197.8,
+      "time": "2026-10-30 19:47:08",
+      "state": {
+        "running": true,
+        "account_ready": false,
+        "account_source": "none",
+        "native_ready": false,
+        "online": false,
+        "login_phase": "initializing",
+        "login_accepted": true,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 5009,
+        "desired_state": "running",
+        "operation": {
+          "id": "83916d84d6fc403e9370177d5612b28b:1",
+          "kind": "start",
+          "status": "waiting",
+          "phase": "starting",
+          "error": "",
+          "code": "",
+          "created_at": 1793360799.478975
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": null,
+        "account_status_at": null,
+        "account_online": null
+      },
+      "processes": [
+        {
+          "pid": 17402,
+          "start": "66365696",
+          "group": 17402,
+          "role": "launcher"
+        },
+        {
+          "pid": 17434,
+          "start": "66365897",
+          "group": 17402,
+          "role": "main"
+        }
+      ],
+      "fish_processes": [
+        {
+          "pid": 17309,
+          "command": "sh"
+        },
+        {
+          "pid": 17313,
+          "command": "python"
+        }
+      ],
+      "new_events": [
+        {
+          "file": "qq.log",
+          "text": "10-30 11:47:06 [info] [Core] [Packet] [PacketClient] NativePacketClient Hook 初始化成功 platform=linux.arm64"
+        }
+      ]
+    },
+    {
+      "elapsed": 202.9,
+      "time": "2026-10-30 19:47:13",
+      "state": {
+        "running": true,
+        "account_ready": false,
+        "account_source": "none",
+        "native_ready": false,
+        "online": false,
+        "login_phase": "initializing",
+        "login_accepted": true,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 5013,
+        "desired_state": "running",
+        "operation": {
+          "id": "83916d84d6fc403e9370177d5612b28b:1",
+          "kind": "start",
+          "status": "waiting",
+          "phase": "starting",
+          "error": "",
+          "code": "",
+          "created_at": 1793360799.478975
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": null,
+        "account_status_at": null,
+        "account_online": null
+      },
+      "processes": [
+        {
+          "pid": 17402,
+          "start": "66365696",
+          "group": 17402,
+          "role": "launcher"
+        },
+        {
+          "pid": 17434,
+          "start": "66365897",
+          "group": 17402,
+          "role": "main"
+        }
+      ],
+      "fish_processes": [
+        {
+          "pid": 17309,
+          "command": "sh"
+        },
+        {
+          "pid": 17313,
+          "command": "python"
+        }
+      ],
+      "new_events": [
+        {
+          "file": "qq.log",
+          "text": "10-30 11:47:10 [error] 测试Packet状态异常 Error: [PacketClient] sendPacket 超时 cmd=OidbSvcTrpcTcp.0x9067_202 timeout=3000ms"
+        },
+        {
+          "file": "qq.log",
+          "text": "10-30 11:47:10 [info] [AdapterManager] 开始初始化协议适配器..."
+        }
+      ]
+    },
+    {
+      "elapsed": 208.0,
+      "time": "2026-10-30 19:47:18",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 5020,
+        "desired_state": "running",
+        "operation": {
+          "id": "83916d84d6fc403e9370177d5612b28b:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360799.478975
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360837.629197,
+        "account_status_at": null,
+        "account_online": null
+      },
+      "processes": [
+        {
+          "pid": 17402,
+          "start": "66365696",
+          "group": 17402,
+          "role": "launcher"
+        },
+        {
+          "pid": 17434,
+          "start": "66365897",
+          "group": 17402,
+          "role": "main"
+        }
+      ],
+      "fish_processes": [
+        {
+          "pid": 17309,
+          "command": "sh"
+        },
+        {
+          "pid": 17313,
+          "command": "python"
+        }
+      ],
+      "new_events": [
+        {
+          "file": "qq.log",
+          "text": "10-30 11:47:13 [info] [AdapterManager] OneBot11 适配器初始化完成"
+        },
+        {
+          "file": "qq.log",
+          "text": "10-30 11:47:13 [info] [AdapterManager] NapCat Protocol 适配器未启用，跳过初始化"
+        },
+        {
+          "file": "qq.log",
+          "text": "10-30 11:47:13 [info] [AdapterManager] 协议适配器初始化完成，已加载 2 个适配器"
+        }
+      ]
+    },
+    {
+      "elapsed": 213.0,
+      "time": "2026-10-30 19:47:23",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 5024,
+        "desired_state": "running",
+        "operation": {
+          "id": "83916d84d6fc403e9370177d5612b28b:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360799.478975
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360837.629197,
+        "account_status_at": null,
+        "account_online": null
+      },
+      "processes": [
+        {
+          "pid": 17402,
+          "start": "66365696",
+          "group": 17402,
+          "role": "launcher"
+        },
+        {
+          "pid": 17434,
+          "start": "66365897",
+          "group": 17402,
+          "role": "main"
+        }
+      ],
+      "fish_processes": [
+        {
+          "pid": 17309,
+          "command": "sh"
+        },
+        {
+          "pid": 17313,
+          "command": "python"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 218.1,
+      "time": "2026-10-30 19:47:29",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 5030,
+        "desired_state": "running",
+        "operation": {
+          "id": "83916d84d6fc403e9370177d5612b28b:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360799.478975
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360837.629197,
+        "account_status_at": null,
+        "account_online": null
+      },
+      "processes": [
+        {
+          "pid": 17402,
+          "start": "66365696",
+          "group": 17402,
+          "role": "launcher"
+        },
+        {
+          "pid": 17434,
+          "start": "66365897",
+          "group": 17402,
+          "role": "main"
+        }
+      ],
+      "fish_processes": [
+        {
+          "pid": 17309,
+          "command": "sh"
+        },
+        {
+          "pid": 17313,
+          "command": "python"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 223.2,
+      "time": "2026-10-30 19:47:34",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 5034,
+        "desired_state": "running",
+        "operation": {
+          "id": "83916d84d6fc403e9370177d5612b28b:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360799.478975
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360837.629197,
+        "account_status_at": null,
+        "account_online": null
+      },
+      "processes": [
+        {
+          "pid": 17402,
+          "start": "66365696",
+          "group": 17402,
+          "role": "launcher"
+        },
+        {
+          "pid": 17434,
+          "start": "66365897",
+          "group": 17402,
+          "role": "main"
+        }
+      ],
+      "fish_processes": [
+        {
+          "pid": 17309,
+          "command": "sh"
+        },
+        {
+          "pid": 17313,
+          "command": "python"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 228.2,
+      "time": "2026-10-30 19:47:39",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 5040,
+        "desired_state": "running",
+        "operation": {
+          "id": "83916d84d6fc403e9370177d5612b28b:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360799.478975
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360837.629197,
+        "account_status_at": null,
+        "account_online": null
+      },
+      "processes": [
+        {
+          "pid": 17402,
+          "start": "66365696",
+          "group": 17402,
+          "role": "launcher"
+        },
+        {
+          "pid": 17434,
+          "start": "66365897",
+          "group": 17402,
+          "role": "main"
+        }
+      ],
+      "fish_processes": [
+        {
+          "pid": 17309,
+          "command": "sh"
+        },
+        {
+          "pid": 17313,
+          "command": "python"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 233.3,
+      "time": "2026-10-30 19:47:44",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 5044,
+        "desired_state": "running",
+        "operation": {
+          "id": "83916d84d6fc403e9370177d5612b28b:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360799.478975
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360837.629197,
+        "account_status_at": null,
+        "account_online": null
+      },
+      "processes": [
+        {
+          "pid": 17402,
+          "start": "66365696",
+          "group": 17402,
+          "role": "launcher"
+        },
+        {
+          "pid": 17434,
+          "start": "66365897",
+          "group": 17402,
+          "role": "main"
+        }
+      ],
+      "fish_processes": [
+        {
+          "pid": 17309,
+          "command": "sh"
+        },
+        {
+          "pid": 17313,
+          "command": "python"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 238.4,
+      "time": "2026-10-30 19:47:49",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 5050,
+        "desired_state": "running",
+        "operation": {
+          "id": "83916d84d6fc403e9370177d5612b28b:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360799.478975
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360867.6456192,
+        "account_status_at": 1793360867.645662,
+        "account_online": true
+      },
+      "processes": [
+        {
+          "pid": 17402,
+          "start": "66365696",
+          "group": 17402,
+          "role": "launcher"
+        },
+        {
+          "pid": 17434,
+          "start": "66365897",
+          "group": 17402,
+          "role": "main"
+        }
+      ],
+      "fish_processes": [
+        {
+          "pid": 17309,
+          "command": "sh"
+        },
+        {
+          "pid": 17313,
+          "command": "python"
+        }
+      ],
+      "new_events": []
+    },
+    {
+      "elapsed": 243.5,
+      "time": "2026-10-30 19:47:54",
+      "state": {
+        "running": true,
+        "account_ready": true,
+        "account_source": "webui",
+        "native_ready": true,
+        "online": true,
+        "login_phase": "ready",
+        "login_accepted": false,
+        "control_error": null,
+        "qr": false,
+        "qr_age": 5055,
+        "desired_state": "running",
+        "operation": {
+          "id": "83916d84d6fc403e9370177d5612b28b:1",
+          "kind": "start",
+          "status": "completed",
+          "phase": "completed",
+          "error": "",
+          "code": "",
+          "created_at": 1793360799.478975
+        }
+      },
+      "transport": {
+        "receiver_alive": true,
+        "worker_alive": true,
+        "last_received_at": 1793360867.6456192,
+        "account_status_at": 1793360867.645662,
+        "account_online": true
+      },
+      "processes": [
+        {
+          "pid": 17402,
+          "start": "66365696",
+          "group": 17402,
+          "role": "launcher"
+        },
+        {
+          "pid": 17434,
+          "start": "66365897",
+          "group": 17402,
+          "role": "main"
+        }
+      ],
+      "fish_processes": [
+        {
+          "pid": 17309,
+          "command": "sh"
+        },
+        {
+          "pid": 17313,
+          "command": "python"
+        }
+      ],
+      "new_events": []
+    }
+  ],
+  "visible_page": "status page; Fish service connected"
+}

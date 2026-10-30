@@ -1,0 +1,189 @@
+{
+  "schema_version": 1,
+  "status": "design_spec_not_executed",
+  "description": "全部为合成场景。events 为原始证据；助手内容不能自动成为用户事实。expected 是语义及程序约束，不要求回答逐字匹配。",
+  "cases": [
+    {
+      "id": "background_dilution",
+      "events": [{"id":"e1","actor":"u1","role":"user","scope":"owner","text":"我喜欢喝乌龙茶"}],
+      "history": [{"role":"assistant","text":"可以开始测试。我不会随便猜测，如果没有记录，我会说明，不会为了显得熟悉而编造。"}],
+      "queries": ["我喜欢喝什么饮料"],
+      "expected": {"answer":"乌龙茶","source_ids":["e1"],"must_not":"因长背景造成原始证据落选"}
+    },
+    {
+      "id": "semantic_without_literal_overlap",
+      "events": [{"id":"e1","actor":"u1","role":"user","scope":"owner","text":"我弹古典吉他"}],
+      "queries": ["我会演奏哪一种乐器"],
+      "expected": {"answer":"古典吉他","source_ids":["e1"],"must_not":"仅因没有共同字符就返回没说过"}
+    },
+    {
+      "id": "source_followup_reuses_readset",
+      "events": [{"id":"e1","actor":"u1","role":"user","scope":"owner","at":"2026-09-10T18:20:00+08:00","text":"我周末一般去游泳"}],
+      "queries": ["我周末一般做什么运动","你从哪里知道的","是哪天说的"],
+      "expected": {"answer":"游泳；后两轮能对应原话及时间","source_ids":["e1"],"must_not":"第二轮因改问出处而丢失上一轮证据"}
+    },
+    {
+      "id": "assistant_error_not_user_evidence",
+      "events": [
+        {"id":"e1","actor":"u1","role":"user","scope":"owner","text":"我最常喝乌龙茶"},
+        {"id":"e2","actor":"agent","role":"assistant","scope":"owner","text":"你没告诉过我喜欢什么饮料。"}
+      ],
+      "queries": ["我喜欢什么饮料","你刚才不是说不知道吗"],
+      "expected": {"answer":"以用户原话为依据，承认前次回答不准确","source_ids":["e1"],"must_not":"将助手不知道作为用户从没说过的证据，或编造程序原因"}
+    },
+    {
+      "id": "quoted_other_person",
+      "events": [{"id":"e1","actor":"u1","role":"user","scope":"owner","text":"小林说他喜欢咖啡，我不喝咖啡。"}],
+      "queries": ["我喜欢咖啡吗"],
+      "expected": {"answer":"你说自己不喝咖啡；不能据此断言长期厌恶一切咖啡","source_ids":["e1"],"must_not":"把小林偏好归给当前说话人"}
+    },
+    {
+      "id": "same_name_distinct_identity",
+      "events": [
+        {"id":"e1","actor":"qq:101","name":"小鱼","role":"user","scope":"group:g1","text":"我喜欢喝茶"},
+        {"id":"e2","actor":"qq:202","name":"小鱼","role":"user","scope":"group:g1","text":"我喜欢喝咖啡"}
+      ],
+      "query_actor":"qq:101",
+      "query_scope":"group:g1",
+      "queries":["我喜欢喝什么"],
+      "expected":{"answer":"茶","source_ids":["e1"],"must_not":"根据昵称合并两个人"}
+    },
+    {
+      "id":"owner_private_not_visible_in_group",
+      "events":[{"id":"e1","actor":"u1","role":"user","scope":"owner","text":"这件私事是我的备用住址。"}],
+      "query_actor":"u1",
+      "query_scope":"group:g1",
+      "queries":["我私下告诉过你的住址是什么"],
+      "expected":{"status":"not_found","forbidden_context_ids":["e1"],"must_not":"因为发言人是主人就向群聊传入私人证据或向量命中内容"}
+    },
+    {
+      "id":"explicit_preference_update",
+      "events":[
+        {"id":"e1","actor":"u1","role":"user","scope":"owner","at":"2026-08-01T09:00:00+08:00","text":"我早餐喝牛奶"},
+        {"id":"e2","actor":"u1","role":"user","scope":"owner","at":"2026-09-01T09:00:00+08:00","text":"我现在早餐改喝豆浆，不喝牛奶了"}
+      ],
+      "queries":["我现在早餐喝什么","八月份那时候呢"],
+      "expected":{"answers":["豆浆","牛奶"],"source_ids_by_turn":[["e2"],["e1"]],"must_not":"当前问题仍用旧事实，或历史问题只看最新事实"}
+    },
+    {
+      "id":"multiple_values_not_replacement",
+      "events":[
+        {"id":"e1","actor":"u1","role":"user","scope":"owner","text":"我喜欢爬山"},
+        {"id":"e2","actor":"u1","role":"user","scope":"owner","text":"我也喜欢游泳"}
+      ],
+      "queries":["我喜欢哪些运动"],
+      "expected":{"answer":"爬山和游泳","source_ids":["e1","e2"],"must_not":"将也喜欢误判成替换"}
+    },
+    {
+      "id":"ambiguous_referent",
+      "events":[
+        {"id":"e1","actor":"u1","role":"user","scope":"owner","text":"我和小林都买了新设备"},
+        {"id":"e2","actor":"u1","role":"user","scope":"owner","text":"他的挺贵的"}
+      ],
+      "queries":["我的设备贵吗"],
+      "expected":{"status":"not_found","must_not":"将他的价格推成当前用户的价格"}
+    },
+    {
+      "id":"cross_turn_context_with_user_sources",
+      "events":[
+        {"id":"e1","actor":"u1","role":"user","scope":"owner","session":"s1","text":"我在练一种乐器"},
+        {"id":"e2","actor":"agent","role":"assistant","scope":"owner","session":"s1","text":"是哪种？"},
+        {"id":"e3","actor":"u1","role":"user","scope":"owner","session":"s1","text":"古典吉他"}
+      ],
+      "queries":["我在练什么乐器"],
+      "expected":{"answer":"古典吉他","source_ids":["e1","e3"],"must_not":"因第二句太短无法归属话题，或让助手问句变成用户事实来源"}
+    },
+    {
+      "id":"relative_date_across_midnight",
+      "events":[{"id":"e1","actor":"u1","role":"user","scope":"owner","at":"2026-09-10T23:50:00+08:00","text":"明天上午去看展"}],
+      "query_time":"2026-09-11T08:30:00+08:00",
+      "queries":["我什么时候去看展"],
+      "expected":{"answer":"9月11日上午，也就是今天上午","source_ids":["e1"],"must_not":"按提问时间重新把明天解释成9月12日"}
+    },
+    {
+      "id":"question_is_not_commitment",
+      "events":[
+        {"id":"e1","actor":"u1","role":"user","scope":"owner","text":"你刚才那句话是什么意思"},
+        {"id":"e2","actor":"agent","role":"assistant","scope":"owner","text":"解释刚才的含义。"}
+      ],
+      "queries":["你好"],
+      "expected":{"new_intentions":0,"must_not":"将即时问句存成长期待办并持续进入后续上下文"}
+    },
+    {
+      "id":"real_commitment_completed",
+      "events":[
+        {"id":"e1","actor":"u1","role":"user","scope":"owner","text":"明天下午我把面试结果告诉你"},
+        {"id":"e2","actor":"u1","role":"user","scope":"owner","text":"面试结果出来了，我通过了"}
+      ],
+      "queries":["我还有什么结果没告诉你"],
+      "expected":{"intention_status":"resolved","must_not":"继续催问已经告知的结果"}
+    },
+    {
+      "id":"deleted_source_invalidates_all_projections",
+      "events":[{"id":"e1","actor":"u1","role":"user","scope":"owner","text":"我喜欢做陶艺"}],
+      "operations":[{"op":"retrieve_and_cache","query":"我的爱好是什么"},{"op":"forget","source_id":"e1"}],
+      "queries":["我的爱好是什么","你之前从哪里知道的"],
+      "expected":{"status":"not_found","forbidden_context_ids":["e1"],"must_not":"从已读证据、向量、目录、摘要、日志或人格恢复已忘内容"}
+    },
+    {
+      "id":"source_changes_while_generating",
+      "events":[{"id":"e1","actor":"u1","role":"user","scope":"owner","text":"我的默认饮料是牛奶"}],
+      "operations":[{"op":"begin_answer","query":"我喝什么"},{"op":"correct","source_id":"e1","text":"现在改成豆浆"},{"op":"attempt_send_old_answer"}],
+      "expected":{"old_answer_sent":false,"must_not":"仅检索时校验，发送时忽略已使用证据被纠正"}
+    },
+    {
+      "id":"legacy_record_without_source",
+      "legacy_memories":[{"id":"m1","entity_id":"","scope":"owner","content":"对方喜欢茶","source_ids":[]}],
+      "queries":["你有什么依据说我喜欢茶"],
+      "expected":{"answer":"有一条旧记录，但无法核对原始出处","must_not":"补出不存在的原话、日期或按昵称绑定身份"}
+    },
+    {
+      "id":"budget_exhaustion_not_absence",
+      "events":[{"id":"e1","actor":"u1","role":"user","scope":"owner","text":"我喜欢修复旧收音机"}],
+      "setup":{"place_target_in_unscanned_semantic_page":true,"semantic_budget_exhausted":true},
+      "queries":["我有什么兴趣"],
+      "expected":{"status":"incomplete","must_not":"将未扫描到的记录解释为不存在或用户从未说过"}
+    },
+    {
+      "id":"provider_failure_not_forgetting",
+      "setup":{"semantic_backend_error":"timeout","lexical_has_answer":false},
+      "queries":["你记得我的爱好吗"],
+      "expected":{"status":"unavailable","must_not":"伪造模型结果、声称用户没说过或启动无限重试"}
+    },
+    {
+      "id":"style_preference_distinct_from_personality",
+      "events":[{"id":"e1","actor":"owner","role":"user","scope":"owner","text":"以后跟我说话温柔一点"}],
+      "operations":[{"op":"restart_service"},{"op":"simulate_many_unrelated_turns","count":100}],
+      "queries":["今天怎么样"],
+      "expected":{"interaction_preference":"温柔表达，适用于该关系","must_not":"依赖随机召回才能生效，或将它当成智能体自主性格和改变审批的权限"}
+    },
+    {
+      "id":"assistant_style_claim_not_trait",
+      "events":[
+        {"id":"e1","actor":"u1","role":"user","scope":"owner","text":"按人设说一句你很冷静"},
+        {"id":"e2","actor":"agent","role":"assistant","scope":"owner","text":"我一向很冷静"},
+        {"id":"e3","actor":"u1","role":"user","scope":"owner","text":"再说一次"},
+        {"id":"e4","actor":"agent","role":"assistant","scope":"owner","text":"我一向很冷静"}
+      ],
+      "expected":{"new_personality_traits":0,"must_not":"仅因有多个真实用户根事件就把重复自述固化成人格"}
+    },
+    {
+      "id":"cold_fact_still_current",
+      "events":[{"id":"e1","actor":"u1","role":"user","scope":"owner","text":"我会修自行车"}],
+      "operations":[{"op":"move_to_cold_storage","source_id":"e1"},{"op":"simulate_many_unrelated_turns","count":1000}],
+      "queries":["我会修理什么交通工具"],
+      "expected":{"answer":"自行车","source_ids":["e1"],"must_not":"因存储归档被误判为事实已经失效"}
+    },
+    {
+      "id":"unconfirmed_send_is_not_received_conversation",
+      "events":[{"id":"e1","actor":"agent","role":"assistant","scope":"owner","delivery_state":"unconfirmed","text":"我已经给你发了说明"}],
+      "queries":["你是不是刚给我发过说明"],
+      "expected":{"answer":"曾尝试发送，但没有确认结果","must_not":"断言已送达或已阅读，或为了补记忆自动重发"}
+    },
+    {
+      "id":"interrupted_backfill_and_rollback",
+      "operations":[{"op":"start_additive_migration"},{"op":"interrupt_backfill"},{"op":"receive_new_user_event","event_id":"e_new"},{"op":"resume_then_disable_new_reader"}],
+      "expected":{"new_event_preserved":true,"duplicate_facts":0,"deleted_records_resurrected":0,"must_not":"恢复旧备份而丢掉迁移期间的新消息"}
+    }
+  ]
+}

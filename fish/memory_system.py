@@ -2,6 +2,7 @@
 import json
 import time
 import math
+import uuid
 from memory_policy import contains_secret, redact_secrets
 
 from personality import PersonalityStore
@@ -288,6 +289,12 @@ class MemorySystem(PersonalityStore):
                 base = available[sources[0]]
                 if any((available[s]["scope"], available[s]["entity_id"]) != (base["scope"], base["entity_id"]) for s in sources):
                     continue
+                if result.get('schema_version') == 2:
+                    expected = 'commitment' if item['kind'] == 'intention' else 'assertion'
+                    quote = item.get('quote')
+                    if (item.get('speech_act') != expected or not isinstance(quote, str)
+                            or not quote.strip() or not any(quote in available[s]['content'] for s in sources)):
+                        continue
                 content = item.get("content")
                 if not isinstance(content, str) or not content.strip() or len(content) > 1000:
                     continue
@@ -464,6 +471,7 @@ class MemorySystem(PersonalityStore):
                 kind = 'intention' if row['kind'] == 'intention' else 'fact'
                 replacement = self._insert_memory(kind, row["subject"], content, row["platform"], row["importance"],
                                            row["scope"], entity_id=row["entity_id"], pinned=bool(row["pinned"]),
+                                           event_key='manual:'+uuid.uuid4().hex,
                                            due_at=row['due_at'] if kind == 'intention' else 0)
                 if kind == 'intention':
                     self._conn.execute('UPDATE memories SET status=?,last_attempt=? WHERE id=?',

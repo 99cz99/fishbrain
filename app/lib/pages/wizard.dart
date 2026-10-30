@@ -204,6 +204,7 @@ class _WizardPageState extends State<WizardPage> {
         'life.py': 'assets/fish/life.py',
         'memory.py': 'assets/fish/memory.py',
         'memory_policy.py': 'assets/fish/memory_policy.py',
+        'memory_service.py': 'assets/fish/memory_service.py',
         'memory_system.py': 'assets/fish/memory_system.py',
         'personality.py': 'assets/fish/personality.py',
         'qq_bot.py': 'assets/fish/qq_bot.py',

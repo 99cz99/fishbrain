@@ -16,6 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
        │     server.py   HTTP API (127.0.0.1:8765)，给 app 用
        │     brain.py    调 LLM（openai/anthropic/gemini），chat + chat_with_tools（function calling）
        │     memory.py   SQLite：软设定/长期记忆/日志/审批/token 用量/生命周期状态
+       │     memory_service.py 聊天语义召回、原话证据包、同会话读集与来源版本校验
        │     life.py     「心」：心跳。两段式——先定 drive（本能面），再定具体动作
        │     autonomy.py 自主循环：心跳调度 + 工具选择层(select_tools) + 分发(_route)
        │     qq_control.py QQController：独立线程统一调度生命周期、原生登录与 WebUI 控制
@@ -189,10 +190,12 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux /data/data/com.termux/files/usr/
 - **Termux 没权限写 `/data/local/tmp`**（`drwxrwx--x shell:shell`，只有 adb/shell 能写；Termux 是普通 app UID 写不进去）。`setup-qq.sh` 下载 linuxqq/NapCat 必须写到 `$PREFIX/tmp`（`/data/data/com.termux/files/usr/tmp`），否则一下载就 Permission denied、脚本 `exit 1`——这正是「装 QQ 环境卡在安装 linuxqq」的根因。
 - **`Store.get_logs(category, level, limit)` 第二参是 `level` 不是 `limit`**：按位置传会把 limit 当 level 过滤（`WHERE level=40` 永远空）。所以 `get_logs("deploy", 40)` 是错的，要 `get_logs("deploy", limit=40)`。踩过：server.py 的 Deployer 状态、`/chat`、life.py 的「最近发生的事」都曾因此返回空。改 `get_logs` 一律用 `limit=` 关键字。
 - **`app/assets/fish/*.py` 要跟 `fish/` 同步**：那是「部署向导」写进 Termux 的嵌入副本。改完执行 `python tools/sync_fish_assets.py`，自动生成所有运行模块副本及 wizard.dart 清单；发布前 `python tools/sync_fish_assets.py --check`，不要只校验部分文件。`app/assets/deploy/` 同理同步 `setup-qq.sh`/`setup-fish.sh`/`onebot11.json`（`setup-fish.sh` 是装 Python 环境的分步脚本，`deploy/` 根目录也要留一份）。
-- **版本号**：改 `app/` 代码或嵌入资源都 bump `app/pubspec.yaml` 的 `version`（x.y.z+n）。2026-10-30 当前为 `1.0.47+61`；APK 路径 `app/build/app/outputs/flutter-apk/app-release.apk`。
+- **版本号**：改 `app/` 代码或嵌入资源都 bump `app/pubspec.yaml` 的 `version`（x.y.z+n）。2026-10-31 当前为 `1.0.48+62`；APK 路径 `app/build/app/outputs/flutter-apk/app-release.apk`。
 - **心跳恢复契约**：`Life.decide_action()` 返回含 `tool_calls` 与可选 `failed/cancelled` 标记的对象；首轮和读结果回喂都必须检查。失败退避保存合并最新心情，不能用完整情绪版本直接取消调度；明确叫醒用 `life_state.wake_revision`、记忆重置用 epoch 保护。详见 `docs/heartbeat-timeout-fix-2026-10-30.md`。
 
 ## 最近验证（2026-10-30）
+
+- 后续按用户要求执行真实 App 冷启动链：状态页点启动鱼脑，部署页点启动 QQ，登录页确认在线；未通过 ADB shell/API 代发启动或登录。19:35:01 App 启动 QQ，19:35:51 首次采样确认 ready/OneBot 在线。本次初始上次任务 failed/interrupted，阻止 QQ 自动拉起，必须明确手动启动；不能把仅启动鱼脑等同于 QQ 也会恢复。此前最近的已在线会话页面验证不能替代这类 App 全链路测试。细节见 `docs/app-driven-start-login-2026-10-30.md`。
 
 - `1.0.47+61` 修复用户再次报告的 App 登录状态误判：QQ 实际在线，旧 WebUI 2 秒等待反复超时；一次放宽等待的查询耗时 8.243 秒仍返回 ready，OneBot 实时状态及身份一致。新增明确在线证据时效/账号/会话绑定，控制慢查询与业务在线分离，App 当前在线优先于旧任务错误。186 项 Python、24 项 Flutter 及静态分析通过；手机配套更新仅重启鱼脑，保留原 QQ 进程，实际两页均显示在线，APK 和 17 模块一致。详见 `docs/releases/v1.0.47.md` 与 `docs/qq-login-slow-control-verification-2026-10-30.json`。
 
@@ -215,6 +218,15 @@ MSYS_NO_PATHCONV=1 adb shell "run-as com.termux /data/data/com.termux/files/usr/
 - 本轮手机仅替换 `qq_bot.py`、`qq_delivery.py`、`qq_faces.py`，其余源码哈希保持；专用脚本 `tools/deploy_qq_faces_update.py` 校验暂存哈希、备份并支持切换失败回退。备份数据库仅留手机。初查发现的四个旧模块哈希差异，经后续核对为换行差异。
 - 未主动向 QQ 联系人发送测试消息；用户自然交流后，只读查询平台记录确认原生表情，以及同一轮回复的两条独立消息。安装后鱼脑 HTTP 200、QQ 在线、原有 Termux 权限仍为 granted。完整 UI 新装/升级流程及长期模型效果仍需验证。
 - 本轮说明见 `docs/qq-face-fix-2026-10-29.md` 和 `docs/releases/v1.0.43.md`；先前发送确认及图片缓存修复见 `docs/qq-delivery-fix-2026-10-29.md` 和 `docs/qq-media-send-diagnosis-2026-10-29.md`。
+
+## 2026-10-31 记忆召回修复
+
+- 本地版本 1.0.48+62。新增 `memory_service.py`，安装资源和向导清单为 18 个运行模块。QQ 聊天分离当前问题与用户话题，使用现有模型做只读语义选择；角色来源、原话、时间、同会话读集及发送前版本校验配套。心跳/行动共用来源展开和范围校验。
+- 人工纠正通过已有 event_key 的 manual 前缀标注；新提炼契约 version=2，要求言语性质及可匹配原话片段。无数据库 schema 迁移，旧记录未批量清理。目录超过预算标为 incomplete，供应商失败标为 unavailable，不能混同“用户没说过”。检索增加模型调用及 token 用量。
+- 208 项 Python 回归、24 项 Flutter 测试、静态分析和 release 构建通过。手机隔离模型验证及历史聊天路径回放通过，无平台测试发送。专用更新脚本 `tools/deploy_memory_recall_update.py` 校验哈希、备份、保留 QQ 进程并支持源码回退。详细边界见 `docs/releases/v1.0.48.md`。
+- 更新前 QQ 已离线，有未知结果的 quick_login；本次未重放登录。记忆修复与 QQ 登录恢复分开判断。完整 v3 设计及其 24 个场景尚未全部实现或验收，不能描述为全量重构完成。
+- 本轮还定位到系统进程发出 Termux 强停请求，详见 `docs/disconnect-diagnosis-2026-10-30.md`；后台权限已经开启不代表后台清理已被排除，新增卡片锁定后尚需长期验证。不能把记忆修复或短时在线采样描述为后台强停问题已解决。
+- 发布资产为 `v1.0.48` 的 `app-release.apk` 和 `app-release.apk.sha256`。新装/升级仍需配套更新 APK 与 Termux 运行代码；不能只覆盖 APK 就称鱼脑已升级。仓库仅保存脱敏诊断说明与匿名评测，原始聊天、数据库、令牌、配置和签名材料不入库。
 
 ## 待做（详见计划文件）
 

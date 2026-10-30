@@ -179,7 +179,8 @@ class MemoryTests(unittest.TestCase):
         brain.chat.assert_not_called()
         self.store._conn.execute('UPDATE memories SET occurred_at=?', (time.time()-60,))
         self.store._conn.commit()
-        brain.chat.return_value = json.dumps({'memories':[{'kind':'fact','content':'等待结果','source_ids':[event]}]})
+        brain.chat.return_value = json.dumps({'schema_version':2,'memories':[{'kind':'fact','content':'等待结果',
+            'speech_act':'assertion','quote':'明天告诉你结果','source_ids':[event]}]})
         auto.process_memory_batch()
         self.assertEqual(len(self.store.get_memories(kind='fact')), 1)
         self.assertEqual(self.store.pending_episode_batch(), [])

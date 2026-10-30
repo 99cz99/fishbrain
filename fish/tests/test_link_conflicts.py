@@ -144,7 +144,7 @@ class LinkConflicts(unittest.TestCase):
             self.assertEqual(result['drive'],'none')
             raw = self.store.get_setting_raw('life_state')
             if change == 'appraisal':
-                self.assertEqual(raw['dominance'],.4)
+                self.assertAlmostEqual(raw['dominance'],.4,places=6)
             elif change == 'reset':
                 self.assertEqual(raw,{})
             else:
@@ -163,7 +163,7 @@ class LinkConflicts(unittest.TestCase):
         self.store.record_episode('qq:101','test','event','owner',occurred_at=time.time()-60)
         def after_delete(messages):
             self.store.clear_memories(); self.store.set_life_state({})
-            return '{"memories":[],"appraisal":{"desirability":1,"intensity":1}}'
+            return '{"schema_version":2,"memories":[],"appraisal":{"desirability":1,"intensity":1}}'
         self.auto.brain.chat = Mock(side_effect=after_delete)
         self.auto.process_memory_batch()
         self.assertEqual(self.store.get_setting_raw('life_state'),{})

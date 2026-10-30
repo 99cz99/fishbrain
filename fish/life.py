@@ -9,6 +9,7 @@ import weather
 from brain import LLMTransportError
 from memory import render_self_profile, format_memory_line, mood_param, MEMORY_EMOTION_NUDGE_K, MEMORY_EMOTION_NUDGE_CAP
 from memory_policy import TRUST_RULES, render_identity, evidence_data, data_message
+from memory_service import MemoryService, READ_RULES
 
 # 下次心跳间隔的软边界（分钟）：防它永睡或刷屏。这是安全护栏，不是「闹钟」。
 MIN_NEXT_MIN = 10
@@ -39,6 +40,9 @@ class Life:
         self.store = store
         self.brain = brain
         self._context_ids = []
+        self.memory_service = MemoryService(store, brain)
+        self._action_bundle = None
+        self._heartbeat_bundle = None
 
     # ---- 状态（持久化在 memory.Store 的 life_state）----
     def state(self):
@@ -149,6 +153,8 @@ class Life:
             settings = self.store.get_settings()
             prompt = self._prompt(settings, st)
             result = self.brain.chat_with_tools([{"role": "system", "content": render_identity(settings)}, {"role": "user", "content": prompt}], self._core_tools())
+            if self._heartbeat_bundle and not self.memory_service.valid(self._heartbeat_bundle):
+                return {'tool_calls': [], 'drive':'none', 'next_wake':0, 'cancelled': True}
             for tc in result.get("tool_calls", []) or []:
                 name = tc.get("name")
                 args = tc.get("arguments", {}) or {}
@@ -209,7 +215,8 @@ class Life:
             prompt = self._action_prompt(settings, drive, extra_context, target_scope)
             result = self.brain.chat_with_tools([{"role": "system", "content": render_identity(settings)}, {"role": "user", "content": prompt}], tools)
             allowed = {t['function']['name'] for t in tools}
-            if (epoch != (self.store.get_setting_raw('memory_epoch') or 0)
+            if (self._action_bundle and not self.memory_service.valid(self._action_bundle)
+                    or epoch != (self.store.get_setting_raw('memory_epoch') or 0)
                     or snapshot != self._schedule_snapshot()
                     or render_identity(settings) != render_identity(self.store.get_settings())):
                 return {'tool_calls': [], 'cancelled': True}
@@ -224,7 +231,10 @@ class Life:
         lines = [render_identity(settings)]
         lines.append(f"你现在偏向「{drive}」这个天性面。")
         rows = self.store.action_context(target_scope, self._context_ids)
-        lines.append(data_message({'target_scope': target_scope, 'trigger_evidence': evidence_data(rows)})['content'])
+        self._action_bundle = self.memory_service.source_context(rows, target_scope)
+        lines.append(READ_RULES)
+        lines.append(data_message({'target_scope': target_scope,
+                                  'recall':self.memory_service.data(self._action_bundle)})['content'])
         if target_scope == 'owner':
             lines.append(self._pending_context(settings))
         if extra_context:
@@ -256,8 +266,9 @@ class Life:
         recent_text = "\n".join(f"- [{r['ts']}] {r['message']}" for r in recent) or "（还没有发生过什么）"
 
         mems = self.store.get_memories(limit=8, kinds=('fact','belief','experience','episode'), current_only=True)
-        self._context_ids = [m['id'] for m in mems]
-        mem_text = "\n".join(format_memory_line(m) for m in mems) or "（还没有记忆）"
+        self._heartbeat_bundle = self.memory_service.source_context(mems, 'owner')
+        self._context_ids = [m['id'] for m in self._heartbeat_bundle['memories']]
+        mem_text = data_message(self.memory_service.data(self._heartbeat_bundle))['content']
 
         platforms = "、".join(settings.get("enabled_platforms", []) or []) or "暂无"
 
@@ -273,6 +284,7 @@ class Life:
 
         return "\n".join([
             render_identity(settings),
+            READ_RULES,
             f"现在是 {_now_str()}。{weather_part}",
             f"距离你上次醒来已经 {since_wake}。{mood_line}",
             mood_num,

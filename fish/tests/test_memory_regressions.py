@@ -50,7 +50,7 @@ class AuditRegressions(unittest.TestCase):
         fact = self.store.add_memory('fact','同名','旧偏好',scope='owner',entity_id='qq:101')
         for i in range(55):
             self.event(f'闲聊{i}')
-        brain = Mock(chat=Mock(return_value='{"memories":[]}'))
+        brain = Mock(chat=Mock(return_value='{"schema_version":2,"memories":[]}'))
         Autonomy(self.store, brain).process_memory_batch()
         prompt = brain.chat.call_args.args[0][-1]['content']
         self.assertIn('旧偏好', prompt)

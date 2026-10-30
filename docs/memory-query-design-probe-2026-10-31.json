@@ -1,0 +1,40 @@
+{
+  "note": "Synthetic retrieval probe only; no LLM answer was evaluated.",
+  "results": [
+    {
+      "case": "background_dilution",
+      "variants": {
+        "existing": {
+          "direct_fact_in_context": false,
+          "fact_similarity": 0.0201,
+          "kinds": [
+            "experience"
+          ]
+        },
+        "question_only": {
+          "direct_fact_in_context": true,
+          "fact_similarity": 0.1691,
+          "kinds": [
+            "fact",
+            "episode"
+          ]
+        }
+      }
+    },
+    {
+      "case": "semantic_gap",
+      "variants": {
+        "existing": {
+          "direct_fact_in_context": false,
+          "fact_similarity": 0.0148,
+          "kinds": []
+        },
+        "question_only": {
+          "direct_fact_in_context": false,
+          "fact_similarity": 0.0,
+          "kinds": []
+        }
+      }
+    }
+  ]
+}

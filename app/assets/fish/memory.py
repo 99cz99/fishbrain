@@ -548,22 +548,24 @@ class Store(MemorySystem, DeliveryStore):
             )
             self._conn.commit()
 
-    def get_short_term(self, scope=None, limit=20):
+    def get_short_term(self, scope=None, limit=20, with_metadata=False):
         """短期上下文：按 context_scope 隐私层级取最近 N 条。
         owner/None → 全渠道；group:{id} → 本群；private:{id} → 本人。"""
         with self._lock:
+            columns = 'role, content, id, session, ts' if with_metadata else 'role, content'
             if scope and scope != "owner":
                 session = scope.replace(":", "_", 1)
                 rows = self._conn.execute(
-                    "SELECT role, content FROM short_term WHERE session = ? ORDER BY id DESC LIMIT ?",
+                    f"SELECT {columns} FROM short_term WHERE session = ? ORDER BY id DESC LIMIT ?",
                     (session, limit),
                 ).fetchall()
             else:
                 rows = self._conn.execute(
-                    "SELECT role, content FROM short_term ORDER BY id DESC LIMIT ?",
+                    f"SELECT {columns} FROM short_term ORDER BY id DESC LIMIT ?",
                     (limit,),
                 ).fetchall()
-        return [dict(zip(("role", "content"), r)) for r in rows][::-1]
+        keys = ('role','content','id','session','ts') if with_metadata else ('role','content')
+        return [dict(zip(keys, r)) for r in rows][::-1]
 
     def clear_short_term(self):
         with self._lock:

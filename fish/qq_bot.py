@@ -19,6 +19,7 @@ import weather
 from memory import render_self_profile, format_memory_line
 from memory_policy import data_message, evidence_data, person_code, redact_secrets, render_identity
 from delivery import SendUnconfirmedError, SendCancelledError
+from memory_service import MemoryService, READ_RULES
 from qq_faces import FACE_IDS, face_id
 import qq_media
 
@@ -113,6 +114,7 @@ class QQBot:
         self.ws_url = ws_url
         self.brain = brain
         self.store = store
+        self.memory_service = MemoryService(store, brain)
         self.request_approval = request_approval
         self.consolidate = consolidate
         self.self_id = None   # 登录后的 QQ 号（meta_event connect 里拿到）
@@ -1371,17 +1373,18 @@ class QQBot:
             scope = self._memory_scope(msg_type, user_id, group_id, settings)
 
             # 短期上下文（按隐私层级：主人全渠道、群只看本群、私聊只看本人）
-            history = self.store.get_short_term(scope, limit=SHORT_TERM_LIMIT)
+            history = self.store.get_short_term(scope, limit=SHORT_TERM_LIMIT, with_metadata=True)
             # 去掉刚写入 short_term 的「当前这条」：它下面会作为 final user turn 再给一次，
             # 否则同一条消息在上下文里出现两遍，LLM 会误以为对方发了两遍
             if history and history[-1]["role"] == "user" and history[-1]["content"] == written_user:
                 history = history[:-1]
 
             # 长期记忆（按相关性 + scope 软偏好召回，带身份标签）
-            query = "\n".join(h["content"][-300:] for h in history[-2:]) + "\n" + text
-            memories = self.store.retrieve(query, k=8, context_scope=scope, entity_id=entity_id, exclude_ids=(event_memory_id,))
-            mem_text = "\n".join(format_memory_line(m, with_kind=True) for m in memories)
-            working = self.store.working_context(scope, entity_id, exclude_ids=(event_memory_id,))
+            recall = self.memory_service.prepare(text, history, scope, entity_id, session,
+                                                 exclude_ids=(event_memory_id,))
+            self._log('info', 'memory_lookup', json.dumps(dict(
+                version=MemoryService.VERSION, status=recall['status'], search_status=recall['search_status'],
+                candidates=recall['candidate_count'], ids=list(recall['_versions'])), ensure_ascii=False))
 
             weather_text = weather.get_weather(settings.get("city", ""))
             mood_text = self.store.get_life_state().get("mood", "")
@@ -1389,7 +1392,7 @@ class QQBot:
             sys_content = build_system_prompt(settings, weather=weather_text, mood=mood_text)
             if not self._self_avatar_desc and self.self_id:
                 self._self_avatar_desc = self._get_avatar_desc(self.self_id)
-            sys_content += "\nbelief是暂定认识，不是事实；记忆不足时询问，不虚构共同经历。"
+            sys_content += '\n' + READ_RULES
 
             # 当前对话语境（自然语气，放 system 而非 user turn，避免表单感）
             context_parts = []
@@ -1408,11 +1411,13 @@ class QQBot:
                     context_parts.append(f"「{nickname}」在回这句：「{reply_text}」")
             chat_messages = [{"role": "system", "content": sys_content}]
             chat_messages.append(data_message(dict(
-                current_person=person_code(entity_id), scope=scope, memories=evidence_data(memories),
-                working_context=working, context=context_parts, self_avatar=self._self_avatar_desc,
+                current_person=person_code(entity_id), scope=scope, recall=self.memory_service.data(recall),
+                history_metadata=[dict(index=i, time=h.get('ts'), session=h.get('session'))
+                                  for i,h in enumerate(history)],
+                context=context_parts, self_avatar=self._self_avatar_desc,
                 available_stickers=sticker_names)))
             for h in history:
-                chat_messages.append({"role": h["role"], "content": h["content"]})
+                chat_messages.append({"role": h["role"], "content": h['content']})
             chat_messages.append({"role": "user", "content": text})
 
             # 群消息（非 @ 别人）→ LLM 判断该不该回
@@ -1450,7 +1455,8 @@ class QQBot:
                     ),
                     "tool_calls": [],
                 }
-            if (memory_epoch != (self.store.get_setting_raw('memory_epoch') or 0)
+            if (not self.memory_service.valid(recall)
+                    or memory_epoch != (self.store.get_setting_raw('memory_epoch') or 0)
                     or render_identity(settings) != render_identity(self.store.get_settings())
                     or 'qq' not in self.store.get_settings().get('enabled_platforms', [])):
                 return
@@ -1472,17 +1478,20 @@ class QQBot:
 
         if not msgs:
             return  # 空回复（罕见）：不发送、不写记忆
-        if (memory_epoch != (self.store.get_setting_raw('memory_epoch') or 0)
+        if (not self.memory_service.valid(recall)
+                or memory_epoch != (self.store.get_setting_raw('memory_epoch') or 0)
                 or render_identity(settings) != render_identity(self.store.get_settings())):
             return
 
         # 回复：text/face 混合段逐条发；群聊只在第一条 @
         self._send_segments(group_id if msg_type == "group" else user_id, msgs, msg_type,
                             at_user=(user_id if msg_type == "group" else None),
-                            guard=lambda: memory_epoch == (self.store.get_setting_raw('memory_epoch') or 0)
+                            guard=lambda: self.memory_service.valid(recall)
+                            and memory_epoch == (self.store.get_setting_raw('memory_epoch') or 0)
                             and render_identity(settings) == render_identity(self.store.get_settings())
                             and version == self._conversation_versions.get(conversation,0))
         self._log("info", "chat", f"[QQ] 回复 {nickname}: {reply}")
+        self.memory_service.remember(recall)
 
         # 短期上下文回写：只补助手回复（user 那条统一存时已写）
         # Each part is already journaled and reflected into short_term, even on interruption.
